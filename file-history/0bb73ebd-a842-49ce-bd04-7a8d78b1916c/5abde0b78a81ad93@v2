@@ -1,0 +1,619 @@
+"use client";
+
+import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { BookingStatus, BookingType } from "@prisma/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ConditionsWidget } from "@/components/conditions-widget";
+
+type VesselRow = {
+  id: string;
+  yardNumber: string | null;
+  boatName: string;
+  boatType: string | null;
+  boatNumber: string;
+  canRetrieve: boolean;
+  canStayOut: boolean;
+  stayingOnMooring: boolean;
+  bookings: { id: string; type: BookingType; status: BookingStatus; requestedAt: string }[];
+};
+
+function AnchorIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-5 w-5">
+      <circle cx="12" cy="5" r="2" />
+      <path d="M12 7v14M5 11l7-4 7 4M5 19c1.5-2 3.5-3 7-3s5.5 1 7 3" />
+    </svg>
+  );
+}
+
+function BoatIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+      {/* Mast */}
+      <line x1="12" y1="3" x2="12" y2="16" strokeLinecap="round" />
+      {/* Main sail */}
+      <path d="M12 4 L20 14 L12 14 Z" strokeLinejoin="round" strokeLinecap="round" />
+      {/* Jib / front sail */}
+      <path d="M12 7 L6 14 L12 14 Z" strokeLinejoin="round" strokeLinecap="round" />
+      {/* Deck */}
+      <line x1="4" y1="16" x2="20" y2="16" strokeLinecap="round" />
+      {/* Hull */}
+      <path d="M4 16 Q12 21 20 16" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/* Retrieval: mastless motorboat hull */
+function BoatIconDown() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+      {/* Wheelhouse / cabin */}
+      <path d="M7 12 L7 9 L14 9 L14 12" strokeLinejoin="round" strokeLinecap="round" />
+      {/* Deck */}
+      <line x1="3" y1="12" x2="21" y2="12" strokeLinecap="round" />
+      {/* Pointed bow */}
+      <path d="M20 12 L23 10" strokeLinecap="round" />
+      {/* Hull */}
+      <path d="M3 12 Q12 18 23 12" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function DashboardClient({ userName, userHandle, vessels }: { userName: string; userHandle: string | null; vessels: VesselRow[] }) {
+  const router = useRouter();
+  const [localBooked, setLocalBooked] = React.useState<Record<string, Set<BookingType>>>({});
+  const [localStayingOut, setLocalStayingOut] = React.useState<Record<string, boolean>>({});
+  type LaunchedVessel = { id: string; boatName: string; yardNumber: string | null; launchedAt: string | null };
+  type DailyMsg = { message: string; launchStartTime?: string | null; retrievalStartTime?: string | null } | null;
+  const [queueCounts, setQueueCounts] = React.useState<{ launch: number; retrieval: number; launched: number; launchedVessels: LaunchedVessel[]; dailyMessage: DailyMsg } | null>(null);
+
+  React.useEffect(() => {
+    async function fetchCounts() {
+      const res = await fetch("/api/queue-counts", { cache: "no-store" });
+      if (res.ok) setQueueCounts(await res.json());
+    }
+    fetchCounts();
+    const interval = setInterval(fetchCounts, 10_000);
+    return () => clearInterval(interval);
+  }, []);
+  const [bookingResult, setBookingResult] = React.useState<null | {
+    vesselId: string;
+    vesselName: string;
+    type: BookingType;
+    position: number;
+    queue: string[];
+  }>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [pending, startTransition] = React.useTransition();
+  const [pendingAction, setPendingAction] = React.useState<string | null>(null);
+
+  const totalBookings = vessels.reduce((n, v) => n + v.bookings.length, 0);
+  const totalLocal = Object.values(localBooked).reduce((n, s) => n + s.size, 0);
+  const activeBookings = totalBookings + totalLocal;
+
+  async function book(vessel: VesselRow, type: BookingType) {
+    setError(null);
+    const key = vessel.id + "-" + type;
+    setPendingAction(key);
+    startTransition(async () => {
+      const res = await fetch("/api/bookings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vesselId: vessel.id, type }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error ?? "Booking failed");
+        setPendingAction(null);
+        return;
+      }
+      const data = (await res.json()) as { position: number; queue: string[]; booking: { type: BookingType } };
+      setLocalBooked((prev) => {
+        const existing = prev[vessel.id] ? new Set(prev[vessel.id]) : new Set<BookingType>();
+        existing.add(type);
+        return { ...prev, [vessel.id]: existing };
+      });
+      setBookingResult({ vesselId: vessel.id, vesselName: vessel.boatName, type, position: data.position, queue: data.queue });
+      setPendingAction(null);
+    });
+  }
+
+  const [showAddVessel, setShowAddVessel] = React.useState(false);
+  const [addVesselForm, setAddVesselForm] = React.useState({ boatName: "", boatNumber: "", boatType: "", yardNumber: "" });
+  const [addVesselPending, setAddVesselPending] = React.useState(false);
+
+  const [editingVesselId, setEditingVesselId] = React.useState<string | null>(null);
+  const [editVesselForm, setEditVesselForm] = React.useState({ boatName: "", boatNumber: "", boatType: "", yardNumber: "" });
+  const [editVesselPending, setEditVesselPending] = React.useState(false);
+
+  async function addVessel(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setAddVesselPending(true);
+    try {
+      const res = await fetch("/api/vessels", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(addVesselForm),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error ?? "Failed to add vessel");
+        return;
+      }
+      setShowAddVessel(false);
+      setAddVesselForm({ boatName: "", boatNumber: "", boatType: "", yardNumber: "" });
+      router.refresh();
+    } finally {
+      setAddVesselPending(false);
+    }
+  }
+
+  function startEditVessel(v: VesselRow) {
+    setEditingVesselId(v.id);
+    setEditVesselForm({ boatName: v.boatName, boatNumber: v.boatNumber, boatType: v.boatType ?? "", yardNumber: v.yardNumber ?? "" });
+  }
+
+  async function saveEditVessel(e: React.FormEvent, vesselId: string) {
+    e.preventDefault();
+    setError(null);
+    setEditVesselPending(true);
+    try {
+      const res = await fetch("/api/vessels/" + vesselId, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(editVesselForm),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error ?? "Failed to update vessel");
+        return;
+      }
+      setEditingVesselId(null);
+      router.refresh();
+    } finally {
+      setEditVesselPending(false);
+    }
+  }
+
+  async function removeVessel(vesselId: string) {
+    if (!window.confirm("Remove this vessel from your account? This cannot be undone.")) return;
+    setError(null);
+    const res = await fetch("/api/vessels/" + vesselId, { method: "DELETE" });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      setError(data?.error ?? "Failed to remove vessel");
+      return;
+    }
+    router.refresh();
+  }
+
+  async function stayOut(vessel: VesselRow) {
+    setError(null);
+    const key = vessel.id + "-STAYOUT";
+    setPendingAction(key);
+    startTransition(async () => {
+      const res = await fetch("/api/bookings/staying-out", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vesselId: vessel.id }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error ?? "Failed to mark staying out");
+        setPendingAction(null);
+        return;
+      }
+      setLocalStayingOut((prev) => ({ ...prev, [vessel.id]: true }));
+      setPendingAction(null);
+    });
+  }
+
+  const dailyMsg = queueCounts?.dailyMessage ?? null;
+  const launchedVessels = queueCounts?.launchedVessels ?? [];
+  const launchedCount = queueCounts?.launched ?? 0;
+
+  return (
+    <div className="space-y-6">
+      {/* Daily message — above weather */}
+      {dailyMsg?.message ? (
+        <div className="overflow-hidden rounded-2xl border border-sky-200 bg-gradient-to-r from-sky-50 to-cyan-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-600 text-sm">📋</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase tracking-widest text-sky-600">West Coast Marine — Today</p>
+              <p className="mt-1 text-sm text-sky-900">{dailyMsg.message}</p>
+              {(dailyMsg.launchStartTime || dailyMsg.retrievalStartTime) ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {dailyMsg.launchStartTime ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-semibold text-emerald-700">
+                      ⚓ Launches from {dailyMsg.launchStartTime}
+                    </span>
+                  ) : null}
+                  {dailyMsg.retrievalStartTime ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-3 py-0.5 text-xs font-semibold text-orange-700">
+                      ⬇ Retrievals from {dailyMsg.retrievalStartTime}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Conditions: Pwllheli — below daily message */}
+      <ConditionsWidget />
+
+      {/* Vessels currently in water */}
+      {launchedCount > 0 ? (
+        <div className="overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-emerald-100 bg-emerald-50 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500 text-xs font-bold text-white">{launchedCount}</span>
+              <span className="text-sm font-semibold text-emerald-800">Vessels Currently In Water</span>
+            </div>
+            <span className="text-xs text-emerald-500">Auto-refreshes every 10 seconds</span>
+          </div>
+          <div className="divide-y divide-emerald-50">
+            {launchedVessels.map((v, i) => (
+              <div key={v.id} className="flex items-center gap-3 px-4 py-2.5">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-600">{i + 1}</span>
+                <span className="font-semibold text-sm text-zinc-900">{v.boatName}</span>
+                {v.yardNumber ? <span className="text-xs text-zinc-400">Yard #{v.yardNumber}</span> : null}
+                {v.launchedAt ? (
+                  <span className="ml-auto text-xs text-zinc-400">
+                    Launched {new Date(v.launchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Hero */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-sky-900 via-sky-800 to-cyan-700 p-6 text-white shadow-lg">
+        <svg aria-hidden="true" className="absolute bottom-0 left-0 w-full opacity-10" viewBox="0 0 400 80" preserveAspectRatio="none">
+          <path d="M0 40 Q100 0 200 40 Q300 80 400 40 L400 80 L0 80Z" fill="white" />
+        </svg>
+        <svg aria-hidden="true" className="absolute bottom-0 left-0 w-full opacity-10" viewBox="0 0 400 60" preserveAspectRatio="none">
+          <path d="M0 30 Q100 60 200 20 Q300 -10 400 30 L400 60 L0 60Z" fill="white" />
+        </svg>
+        <div className="relative">
+          <p className="text-xs font-semibold uppercase tracking-widest text-sky-300">Boat launch &amp; retrieval</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Good day, {userName}</h1>
+          {userHandle ? (
+            <p className="mt-0.5 text-sm font-medium text-sky-300">@{userHandle}</p>
+          ) : null}
+          <p className="mt-2 max-w-md text-sm text-sky-100">
+            Book a same-day launch or retrieval below. Your position in the live queue updates in real time.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <div className="text-2xl font-bold">{vessels.length}</div>
+              <div className="text-xs text-sky-200">Vessel{vessels.length !== 1 ? "s" : ""}</div>
+            </div>
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <div className="text-2xl font-bold">{activeBookings}</div>
+              <div className="text-xs text-sky-200">Active booking{activeBookings !== 1 ? "s" : ""} today</div>
+            </div>
+            <Link href="/queue/LAUNCH" className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm transition-colors hover:bg-white/20">
+              <div className="text-xs text-sky-200">Launch queue</div>
+              <div className="mt-0.5 flex items-center gap-1 text-sm font-semibold">
+                {queueCounts !== null ? (
+                  <span className="rounded-full bg-emerald-400/30 px-2 py-0.5 text-xs font-bold text-emerald-200">{queueCounts.launch} waiting</span>
+                ) : null}
+                <BoatIcon />
+              </div>
+            </Link>
+            <Link href="/queue/RETRIEVAL" className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm transition-colors hover:bg-white/20">
+              <div className="text-xs text-sky-200">Retrieval queue</div>
+              <div className="mt-0.5 flex items-center gap-1 text-sm font-semibold">
+                {queueCounts !== null ? (
+                  <span className="rounded-full bg-orange-400/30 px-2 py-0.5 text-xs font-bold text-orange-200">{queueCounts.retrieval} waiting</span>
+                ) : null}
+                <BoatIconDown />
+              </div>
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* Error */}
+      {error ? (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
+          <svg className="mt-0.5 h-4 w-4 shrink-0 text-red-500" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 11a1 1 0 01-1-1V8a1 1 0 112 0v4a1 1 0 01-1 1zm0 4a1 1 0 110-2 1 1 0 010 2z" />
+          </svg>
+          <p className="text-sm text-red-700">{error}</p>
+        </div>
+      ) : null}
+
+      {/* Booking confirmation */}
+      {bookingResult ? (
+        <div className="overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-sm">
+          <div className="bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-white">Booking confirmed</span>
+              <span className="rounded-full bg-white/25 px-3 py-0.5 text-sm font-bold text-white">
+                Position #{bookingResult.position}
+              </span>
+            </div>
+          </div>
+          <div className="p-5">
+            <p className="text-sm text-zinc-700">
+              <span className="font-semibold text-zinc-900">{bookingResult.vesselName}</span> has been added to the{" "}
+              <span className="font-medium">{bookingResult.type === "LAUNCH" ? "launch" : "retrieval"}</span> queue.
+            </p>
+            {bookingResult.queue.length > 0 ? (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                  Queue snapshot — {bookingResult.queue.length} vessels
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {bookingResult.queue.slice(0, 15).map((yardNum, i) => (
+                    <span
+                      key={i}
+                      className={[
+                        "inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium",
+                        i + 1 === bookingResult.position
+                          ? "bg-emerald-500 text-white ring-2 ring-emerald-300"
+                          : "bg-zinc-100 text-zinc-600",
+                      ].join(" ")}
+                    >
+                      <span className="opacity-60">{i + 1}.</span> {yardNum}
+                    </span>
+                  ))}
+                  {bookingResult.queue.length > 15 ? (
+                    <span className="rounded-lg bg-zinc-100 px-2.5 py-1 text-xs text-zinc-400">
+                      +{bookingResult.queue.length - 15} more
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link href="/queue">
+                <Button size="sm">Open live queue</Button>
+              </Link>
+              <Button size="sm" variant="ghost" onClick={() => setBookingResult(null)}>Dismiss</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Vessels */}
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-zinc-900">My vessels</h2>
+          <button
+            onClick={() => setShowAddVessel((v) => !v)}
+            className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-600 transition hover:bg-sky-100 hover:text-sky-700"
+          >
+            {showAddVessel ? "Cancel" : "+ Add vessel"}
+          </button>
+        </div>
+
+        {showAddVessel ? (
+          <form onSubmit={addVessel} className="mb-4 overflow-hidden rounded-2xl border border-sky-200 bg-sky-50 p-5 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">New vessel</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-500">Boat name *</label>
+                <Input required value={addVesselForm.boatName} onChange={(e) => setAddVesselForm((f) => ({ ...f, boatName: e.target.value }))} placeholder="Sea Breeze" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-500">Registration # *</label>
+                <Input required value={addVesselForm.boatNumber} onChange={(e) => setAddVesselForm((f) => ({ ...f, boatNumber: e.target.value }))} placeholder="BC1234" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-500">Boat type</label>
+                <Input value={addVesselForm.boatType} onChange={(e) => setAddVesselForm((f) => ({ ...f, boatType: e.target.value }))} placeholder="Sailboat, Powerboat…" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-500">Yard #</label>
+                <Input value={addVesselForm.yardNumber} onChange={(e) => setAddVesselForm((f) => ({ ...f, yardNumber: e.target.value }))} placeholder="YD102" />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button type="submit" size="sm" disabled={addVesselPending}>
+                {addVesselPending ? "Adding…" : "Add vessel"}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setShowAddVessel(false)}>Cancel</Button>
+            </div>
+          </form>
+        ) : null}
+        {vessels.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-100 text-zinc-400">
+              <AnchorIcon />
+            </div>
+            <p className="text-sm font-medium text-zinc-600">No vessels registered yet.</p>
+            <p className="mt-1 text-xs text-zinc-400">Register a vessel from your account to get started.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {vessels.map((v) => {
+              const bookedFromServer = new Set(v.bookings.map((b) => b.type));
+              const bookedLocally = localBooked[v.id] ?? new Set<BookingType>();
+              const hasLaunch = bookedFromServer.has("LAUNCH") || bookedLocally.has("LAUNCH");
+              const hasRetrieval = bookedFromServer.has("RETRIEVAL") || bookedLocally.has("RETRIEVAL");
+              const isStayingOut = v.stayingOnMooring || !!localStayingOut[v.id];
+              const isActive = hasLaunch || hasRetrieval || isStayingOut;
+
+              return (
+                <div
+                  key={v.id}
+                  className={[
+                    "group relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-shadow hover:shadow-md",
+                    isActive ? "border-sky-200" : "border-zinc-200",
+                  ].join(" ")}
+                >
+                  <div
+                    className={[
+                      "absolute left-0 top-0 h-full w-1",
+                      isActive ? "bg-gradient-to-b from-sky-400 to-cyan-500" : "bg-zinc-100",
+                    ].join(" ")}
+                  />
+                  <div className="p-5 pl-6">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className={[
+                          "flex h-10 w-10 items-center justify-center rounded-xl",
+                          isActive ? "bg-sky-50 text-sky-600" : "bg-zinc-50 text-zinc-400",
+                        ].join(" ")}>
+                          <AnchorIcon />
+                        </div>
+                        <div>
+                          <div className="font-semibold leading-tight text-zinc-900">{v.boatName}</div>
+                          <div className="mt-0.5 text-xs text-zinc-400">
+                            {[v.boatType, v.yardNumber ? "Yard " + v.yardNumber : null, "#" + v.boatNumber]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={["h-2 w-2 rounded-full", isActive ? "bg-emerald-400" : "bg-zinc-200"].join(" ")}
+                          title={isActive ? "Active booking" : "No bookings"}
+                        />
+                        <button
+                          onClick={() => startEditVessel(v)}
+                          className="rounded-lg px-2 py-0.5 text-xs font-medium text-zinc-400 transition hover:bg-sky-50 hover:text-sky-600"
+                          title="Edit vessel"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => removeVessel(v.id)}
+                          className="rounded-lg px-2 py-0.5 text-xs font-medium text-zinc-400 transition hover:bg-red-50 hover:text-red-500"
+                          title="Remove vessel"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+
+                    {isActive ? (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {hasLaunch ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700 ring-1 ring-sky-200">
+                            <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                            Launch queued
+                          </span>
+                        ) : null}
+                        {hasRetrieval ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-medium text-violet-700 ring-1 ring-violet-200">
+                            <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
+                            Retrieval queued
+                          </span>
+                        ) : null}
+                        {isStayingOut ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
+                            <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                            Staying out
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-zinc-400">No bookings today</p>
+                    )}
+
+                    {editingVesselId === v.id ? (
+                      <form onSubmit={(e) => saveEditVessel(e, v.id)} className="mt-3 space-y-2 rounded-xl border border-sky-100 bg-sky-50 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-600">Edit vessel details</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-0.5">
+                            <label className="text-[10px] font-semibold text-zinc-500">Boat name *</label>
+                            <Input required value={editVesselForm.boatName} onChange={(e) => setEditVesselForm((f) => ({ ...f, boatName: e.target.value }))} placeholder="Sea Breeze" className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[10px] font-semibold text-zinc-500">Registration #</label>
+                            <Input value={editVesselForm.boatNumber} onChange={(e) => setEditVesselForm((f) => ({ ...f, boatNumber: e.target.value }))} placeholder="BC1234" className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[10px] font-semibold text-zinc-500">Boat type</label>
+                            <Input value={editVesselForm.boatType} onChange={(e) => setEditVesselForm((f) => ({ ...f, boatType: e.target.value }))} placeholder="Sailboat…" className="h-8 text-xs" />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[10px] font-semibold text-zinc-500">Yard #</label>
+                            <Input value={editVesselForm.yardNumber} onChange={(e) => setEditVesselForm((f) => ({ ...f, yardNumber: e.target.value }))} placeholder="YD102" className="h-8 text-xs" />
+                          </div>
+                        </div>
+                        <div className="flex gap-2 pt-0.5">
+                          <Button type="submit" size="sm" disabled={editVesselPending} className="h-7 text-xs">
+                            {editVesselPending ? "Saving…" : "Save"}
+                          </Button>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => setEditingVesselId(null)} className="h-7 text-xs">Cancel</Button>
+                        </div>
+                      </form>
+                    ) : null}
+
+                    <div className="my-4 border-t border-zinc-100" />
+
+                    <div className={`grid gap-2 ${isStayingOut || v.canRetrieve ? "grid-cols-2" : "grid-cols-2"}`}>
+                      {hasLaunch ? (
+                        <Link href="/queue" className="contents">
+                          <button className="flex items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-sky-500">
+                            Launch queue <BoatIcon />
+                          </button>
+                        </Link>
+                      ) : (
+                        <button
+                          className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50"
+                          disabled={pending && pendingAction === v.id + "-LAUNCH"}
+                          onClick={() => book(v, "LAUNCH")}
+                        >
+                          {pending && pendingAction === v.id + "-LAUNCH" ? <span className="animate-pulse">Booking\u2026</span> : "Book launch"}
+                        </button>
+                      )}
+
+                      {hasRetrieval ? (
+                        <Link href="/queue" className="contents">
+                          <button className="flex items-center justify-center gap-1.5 rounded-xl bg-violet-600 px-3 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-violet-500">
+                            Retrieval queue <BoatIconDown />
+                          </button>
+                        </Link>
+                      ) : v.canRetrieve ? (
+                        <button
+                          className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-xs font-semibold text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50"
+                          disabled={pending && pendingAction === v.id + "-RETRIEVAL"}
+                          onClick={() => book(v, "RETRIEVAL")}
+                        >
+                          {pending && pendingAction === v.id + "-RETRIEVAL" ? <span className="animate-pulse">Booking…</span> : "Book retrieval"}
+                        </button>
+                      ) : (
+                        <div
+                          className="flex items-center justify-center gap-1 rounded-xl border border-zinc-100 bg-zinc-50 px-3 py-2.5 text-center text-xs text-zinc-400 cursor-not-allowed"
+                          title="Launch your vessel first before booking a retrieval"
+                        >
+                          Launch first to retrieve
+                        </div>
+                      )}
+
+                      {/* Staying out button — full width, once launch is booked and not already staying out */}
+                      {v.canStayOut && !isStayingOut ? (
+                        <button
+                          className="col-span-2 flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                          disabled={pending && pendingAction === v.id + "-STAYOUT"}
+                          onClick={() => stayOut(v)}
+                        >
+                          {pending && pendingAction === v.id + "-STAYOUT" ? <span className="animate-pulse">Updating…</span> : "Staying Out"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

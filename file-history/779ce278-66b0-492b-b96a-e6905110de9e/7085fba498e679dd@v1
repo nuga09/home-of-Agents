@@ -1,0 +1,208 @@
+#!/bin/bash
+# ============================================================
+#  UNIFIED AI ENVIRONMENT — Master Launcher
+#  Starts all services, opens MiroFish in Windows browser.
+#
+#  Usage:  bash start.sh [--no-browser] [--coding-only]
+# ============================================================
+
+set -euo pipefail
+
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOGS="$BASE/.logs"
+mkdir -p "$LOGS"
+
+# ── Colours ──────────────────────────────────────────────────
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'
+R='\033[0;31m'; B='\033[1m'; X='\033[0m'
+
+# ── Flags ────────────────────────────────────────────────────
+NO_BROWSER=false
+CODING_ONLY=false
+for arg in "$@"; do
+  case $arg in
+    --no-browser)   NO_BROWSER=true ;;
+    --coding-only)  CODING_ONLY=true ;;
+  esac
+done
+
+# ── Helpers ──────────────────────────────────────────────────
+log()  { echo -e "${C}[$(date +%H:%M:%S)]${X} $*"; }
+ok()   { echo -e "${G}✔${X}  $*"; }
+warn() { echo -e "${Y}⚠${X}  $*"; }
+err()  { echo -e "${R}✘${X}  $*"; }
+
+wait_port() {
+  local port=$1 name=$2 timeout=${3:-30}
+  log "Waiting for $name on :$port..."
+  for i in $(seq 1 $timeout); do
+    if curl -sf "http://localhost:$port" >/dev/null 2>&1 \
+        || curl -sf "http://localhost:$port/health" >/dev/null 2>&1 \
+        || nc -z localhost "$port" 2>/dev/null; then
+      ok "$name is up"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "$name didn't respond after ${timeout}s (may still be starting)"
+  return 1
+}
+
+open_browser() {
+  local url=$1
+  log "Opening $url in Windows browser..."
+  # Works from WSL — opens the Windows default browser
+  cmd.exe /c start "$url" 2>/dev/null \
+    || powershell.exe -Command "Start-Process '$url'" 2>/dev/null \
+    || warn "Could not auto-open browser. Visit $url manually."
+}
+
+cleanup() {
+  echo ""
+  warn "Shutting down services..."
+  [[ -f "$LOGS/pids.txt" ]] && while read -r pid; do
+    kill "$pid" 2>/dev/null && log "Killed PID $pid"
+  done < "$LOGS/pids.txt"
+  rm -f "$LOGS/pids.txt"
+  echo -e "${G}All services stopped.${X}"
+}
+trap cleanup EXIT INT TERM
+
+# ── Source unified .env ──────────────────────────────────────
+if [[ -f "$BASE/.env" ]]; then
+  set -o allexport
+  source "$BASE/.env"
+  set +o allexport
+fi
+
+# ── Banner ───────────────────────────────────────────────────
+echo ""
+echo -e "${B}${C}╔══════════════════════════════════════════════╗${X}"
+echo -e "${B}${C}║     UNIFIED AI ENVIRONMENT  — Starting       ║${X}"
+echo -e "${B}${C}╚══════════════════════════════════════════════╝${X}"
+echo ""
+
+# ── 1. Check Ollama ──────────────────────────────────────────
+if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  ok "Ollama running (deepseek-coder:6.7b available)"
+else
+  warn "Ollama not running — starting..."
+  nohup ollama serve > "$LOGS/ollama.log" 2>&1 &
+  echo $! >> "$LOGS/pids.txt"
+  wait_port 11434 "Ollama" 20 || true
+fi
+
+# ── 2. nanochat_deepseek API (port 8081) ─────────────────────
+CODING_DIR="$BASE/nanochat_deepseek"
+log "Starting Coding Assistant API (port 8081)..."
+
+# Ensure venv packages are installed
+if ! "$CODING_DIR/venv/bin/python" -c "import fastapi" 2>/dev/null; then
+  log "Installing coding assistant deps..."
+  "$CODING_DIR/venv/bin/pip" install -q \
+    fastapi uvicorn pydantic ollama rich chromadb 2>/dev/null || true
+fi
+
+nohup "$CODING_DIR/venv/bin/python" "$CODING_DIR/api_server.py" \
+  > "$LOGS/coding_assistant.log" 2>&1 &
+CODING_PID=$!
+echo $CODING_PID >> "$LOGS/pids.txt"
+log "Coding Assistant PID: $CODING_PID"
+
+if $CODING_ONLY; then
+  wait_port 8081 "Coding Assistant" 15 || true
+  echo ""
+  echo -e "${B}Coding Assistant API:${X} ${G}http://localhost:8081${X}"
+  echo -e "  ${C}POST /v1/chat/completions${X}  (OpenAI-compatible)"
+  echo -e "  ${C}GET  /health${X}"
+  echo ""
+  wait
+  exit 0
+fi
+
+# ── 3. MiroFish Backend (port 5001, Flask) ───────────────────
+MIRO_DIR="$BASE/MiroFish"
+log "Starting MiroFish Backend (port 5001)..."
+
+# Detect venv
+if   [[ -d "$MIRO_DIR/backend/.venv" ]]; then MIRO_VENV="$MIRO_DIR/backend/.venv"
+elif [[ -d "$MIRO_DIR/backend/venv"  ]]; then MIRO_VENV="$MIRO_DIR/backend/venv"
+elif [[ -d "$MIRO_DIR/.venv"         ]]; then MIRO_VENV="$MIRO_DIR/.venv"
+elif [[ -d "$MIRO_DIR/venv"          ]]; then MIRO_VENV="$MIRO_DIR/venv"
+else
+  warn "No venv found for MiroFish — installing via uv..."
+  cd "$MIRO_DIR" && uv sync --quiet 2>/dev/null || true
+  MIRO_VENV="$MIRO_DIR/backend/venv"
+fi
+
+cd "$MIRO_DIR"
+nohup "$MIRO_VENV/bin/python" "$MIRO_DIR/backend/run.py" \
+  > "$LOGS/mirofish_backend.log" 2>&1 &
+MIRO_BACKEND_PID=$!
+echo $MIRO_BACKEND_PID >> "$LOGS/pids.txt"
+log "MiroFish Backend PID: $MIRO_BACKEND_PID"
+
+# ── 4. Wait for backend ──────────────────────────────────────
+wait_port 5001 "MiroFish Backend" 30 || true
+
+# ── 5. MiroFish Frontend (port 3000, Vite/React) ─────────────
+log "Starting MiroFish Frontend (port 3000)..."
+FRONTEND_DIR="$MIRO_DIR/frontend"
+
+# Install node_modules if missing
+if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+  log "Installing frontend dependencies..."
+  cd "$FRONTEND_DIR" && npm install --silent
+fi
+
+cd "$FRONTEND_DIR"
+nohup npm run dev -- --port 3000 \
+  > "$LOGS/mirofish_frontend.log" 2>&1 &
+MIRO_FRONTEND_PID=$!
+echo $MIRO_FRONTEND_PID >> "$LOGS/pids.txt"
+log "MiroFish Frontend PID: $MIRO_FRONTEND_PID"
+
+# ── 6. Wait then open browser ────────────────────────────────
+wait_port 3000 "MiroFish Frontend" 45
+
+if ! $NO_BROWSER; then
+  sleep 1
+  open_browser "http://localhost:3000"
+fi
+
+# ── 7. Sentinel Agent (claude --print wrapper, port 8080) ────
+AGENT_DIR="$BASE/claude_agent"
+log "Starting Sentinel Agent (port 8080)..."
+
+if [[ ! -d "$AGENT_DIR/venv" ]]; then
+  log "Creating Sentinel Agent venv..."
+  python3 -m venv "$AGENT_DIR/venv"
+  "$AGENT_DIR/venv/bin/pip" install -q -r "$AGENT_DIR/requirements.txt"
+fi
+
+nohup "$AGENT_DIR/venv/bin/python" "$AGENT_DIR/server.py" \
+  > "$LOGS/sentinel_agent.log" 2>&1 &
+AGENT_PID=$!
+echo $AGENT_PID >> "$LOGS/pids.txt"
+wait_port 8080 "Sentinel Agent" 15 || true
+
+# ── 8. Dashboard ─────────────────────────────────────────────
+echo ""
+echo -e "${B}${G}╔══════════════════════════════════════════════╗${X}"
+echo -e "${B}${G}║        ALL SERVICES RUNNING                  ║${X}"
+echo -e "${B}${G}╚══════════════════════════════════════════════╝${X}"
+echo ""
+echo -e "  ${G}●${X} ${B}MiroFish${X}            http://localhost:3000  (main UI)"
+echo -e "  ${G}●${X} ${B}MiroFish API${X}        http://localhost:5001"
+echo -e "  ${G}●${X} ${B}Coding Assistant${X}    http://localhost:8081  (OpenAI-compatible)"
+echo -e "  ${G}●${X} ${B}Sentinel Agent${X}      http://localhost:8080  (claude → local LLM)"
+echo -e "  ${G}●${X} ${B}Ollama${X}              http://localhost:11434"
+echo ""
+echo -e "  ${Y}Logs:${X} $LOGS/"
+echo -e "  ${C}Run tests:${X} bash $BASE/test.sh"
+echo ""
+echo -e "  ${R}Press Ctrl+C to stop all services${X}"
+echo ""
+
+# Keep running so trap fires on Ctrl+C
+wait

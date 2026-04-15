@@ -1,0 +1,124 @@
+import React, { useState, useRef, useEffect } from 'react'
+
+export default function ChatPanel({ onSend, loading, hasScene }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      text: 'Describe a 3D scene to generate. You can also drag images or GLB files into the drop zone above.\n\nExamples:\n• "A red bicycle on a wooden floor"\n• "A female figure standing in a garden"\n• "A round table with four chairs"',
+    },
+  ])
+  const [input, setInput] = useState('')
+  const bottomRef = useRef(null)
+  const textareaRef = useRef(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || loading) return
+    setMessages(m => [...m, { role: 'user', text }])
+    setInput('')
+    try {
+      await onSend(text)
+      setMessages(m => [...m, {
+        role: 'assistant',
+        text: hasScene
+          ? 'Scene updated. Switch to the Scene Graph tab to inspect, or click Render GLB to export.'
+          : 'Scene generated. Click Render GLB in the header to export, or keep refining.',
+      }])
+    } catch {
+      setMessages(m => [...m, { role: 'assistant', text: 'Something went wrong — check the error toast.' }])
+    }
+  }
+
+  const handleKey = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      send()
+    }
+  }
+
+  return (
+    <div style={styles.root}>
+      <div style={styles.messages}>
+        {messages.map((msg, i) => (
+          <div key={i} style={{ ...styles.bubble, ...(msg.role === 'user' ? styles.user : styles.assistant) }}>
+            <span style={styles.roleLabel}>{msg.role === 'user' ? 'You' : 'Agent'}</span>
+            <p style={styles.text}>{msg.text}</p>
+          </div>
+        ))}
+        {loading && (
+          <div style={{ ...styles.bubble, ...styles.assistant }}>
+            <span style={styles.roleLabel}>Agent</span>
+            <p style={{ ...styles.text, color: '#7c6af7' }}>Generating scene…</p>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={styles.inputRow}>
+        <textarea
+          ref={textareaRef}
+          style={styles.textarea}
+          rows={3}
+          placeholder={hasScene ? 'Refine the scene…' : 'Describe a 3D scene…'}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKey}
+          disabled={loading}
+        />
+        <button
+          style={{ ...styles.sendBtn, opacity: loading || !input.trim() ? 0.5 : 1 }}
+          onClick={send}
+          disabled={loading || !input.trim()}
+        >
+          {loading ? '…' : '↑'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const styles = {
+  root: {
+    display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden',
+  },
+  messages: {
+    flex: 1, overflowY: 'auto', padding: '12px 14px',
+    display: 'flex', flexDirection: 'column', gap: 10,
+  },
+  bubble: {
+    borderRadius: 10, padding: '10px 14px', maxWidth: '100%',
+  },
+  user: {
+    background: '#1e1e2e', alignSelf: 'flex-end',
+    border: '1px solid #2a2a3a',
+  },
+  assistant: {
+    background: '#16161e', alignSelf: 'flex-start',
+    border: '1px solid #2a2a3a',
+  },
+  roleLabel: {
+    fontSize: 10, fontWeight: 700, color: '#7c6af7',
+    textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 4,
+  },
+  text: { fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#d0d0e0' },
+  inputRow: {
+    display: 'flex', gap: 8, padding: '10px 12px',
+    borderTop: '1px solid #2a2a3a', background: '#16161e',
+  },
+  textarea: {
+    flex: 1, background: '#0f0f13', border: '1px solid #3a3a4a',
+    borderRadius: 8, color: '#e8e8f0', padding: '8px 10px',
+    fontSize: 13, resize: 'none', outline: 'none', lineHeight: 1.5,
+    fontFamily: 'inherit',
+  },
+  sendBtn: {
+    width: 38, height: 38, borderRadius: 8, border: 'none',
+    background: '#7c6af7', color: '#fff', fontSize: 18,
+    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    alignSelf: 'flex-end', flexShrink: 0,
+  },
+}

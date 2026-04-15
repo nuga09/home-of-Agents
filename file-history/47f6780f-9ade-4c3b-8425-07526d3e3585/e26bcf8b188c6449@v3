@@ -1,0 +1,15 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+
+echo "=== Sentinel AI Suite ==="
+echo
+
+# Start local AI stack (thinking_stripper → LiteLLM → Ollama)
+pgrep -f "thinking_stripper" > /dev/null || nohup python3 -m uvicorn thinking_stripper:app --host 0.0.0.0 --port 4000 --app-dir ~/.claude > /tmp/thinking_stripper.log 2>&1 &
+pgrep -f "litellm.*4001"     > /dev/null || nohup litellm --config ~/.claude/litellm_config.yaml --port 4001 --host 0.0.0.0 > /tmp/litellm.log 2>&1 &
+export ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_BASE_URL=http://localhost:4000
+echo "Local AI stack: thinking_stripper → LiteLLM → Ollama"
+echo
+
+# Launch sentinel suite
+exec bash sentinel_files/start.sh "$@"

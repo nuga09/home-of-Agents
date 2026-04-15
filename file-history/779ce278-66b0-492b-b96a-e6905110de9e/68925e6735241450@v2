@@ -1,0 +1,244 @@
+import React, { useState, useCallback } from 'react'
+import ChatPanel from './components/ChatPanel'
+import ScenePreview from './components/ScenePreview'
+import SceneGraph from './components/SceneGraph'
+import DropZone from './components/DropZone'
+
+const API = ''  // proxied by Vite to localhost:8000
+
+export default function App() {
+  const [sessionId, setSessionId] = useState(null)
+  const [sceneId, setSceneId]     = useState(null)
+  const [sceneGraph, setSceneGraph] = useState(null)
+  const [glbUrl, setGlbUrl]       = useState(null)
+  const [loading, setLoading]     = useState(false)
+  const [rendering, setRendering] = useState(false)
+  const [error, setError]         = useState(null)
+  const [pendingImages, setPendingImages] = useState([])  // File objects
+  const [pendingGlbs, setPendingGlbs]     = useState([])  // File objects
+  const [activeTab, setActiveTab] = useState('preview')  // 'preview' | 'graph'
+
+  const handleSend = useCallback(async (prompt) => {
+    setLoading(true)
+    setError(null)
+    try {
+      let res, data
+
+      if (pendingImages.length > 0 || pendingGlbs.length > 0) {
+        const form = new FormData()
+        form.append('prompt', prompt)
+        if (sessionId) form.append('session_id', sessionId)
+        pendingImages.forEach(f => form.append('images', f))
+        pendingGlbs.forEach(f => form.append('glbs', f))
+
+        res = await fetch(`${API}/api/generate-with-media`, { method: 'POST', body: form })
+      } else {
+        res = await fetch(`${API}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, session_id: sessionId }),
+        })
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(err.detail || JSON.stringify(err))
+      }
+      data = await res.json()
+
+      setSessionId(data.session_id)
+      setSceneId(data.scene_id)
+      setSceneGraph(data.scene_graph)
+      setGlbUrl(null)         // clear old render
+      setPendingImages([])
+      setPendingGlbs([])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId, pendingImages, pendingGlbs])
+
+  const handleRefine = useCallback(async (prompt) => {
+    if (!sessionId) return handleSend(prompt)
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/api/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, session_id: sessionId }),
+      })
+      if (!res.ok) throw new Error((await res.json()).detail)
+      const data = await res.json()
+      setSceneId(data.scene_id)
+      setSceneGraph(data.scene_graph)
+      setGlbUrl(null)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId, handleSend])
+
+  const handleRender = useCallback(async () => {
+    if (!sceneId) return
+    setRendering(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/api/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene_id: sceneId }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(JSON.stringify(err.detail || err))
+      }
+      const data = await res.json()
+      setGlbUrl(data.glb_url)
+      setActiveTab('preview')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setRendering(false)
+    }
+  }, [sceneId])
+
+  const handleNewSession = () => {
+    setSessionId(null)
+    setSceneId(null)
+    setSceneGraph(null)
+    setGlbUrl(null)
+    setError(null)
+    setPendingImages([])
+    setPendingGlbs([])
+  }
+
+  return (
+    <div style={styles.root}>
+      {/* Header */}
+      <header style={styles.header}>
+        <span style={styles.logo}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7c6af7" strokeWidth="2">
+            <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/>
+            <line x1="12" y1="2" x2="12" y2="22"/>
+            <line x1="2" y1="8.5" x2="22" y2="8.5"/>
+          </svg>
+          Blender AI Agent
+        </span>
+        <div style={styles.headerRight}>
+          {sceneGraph && (
+            <button style={styles.btnRender} onClick={handleRender} disabled={rendering}>
+              {rendering ? 'Rendering…' : 'Render GLB'}
+            </button>
+          )}
+          <button style={styles.btnNew} onClick={handleNewSession}>New Scene</button>
+        </div>
+      </header>
+
+      {/* Main */}
+      <div style={styles.main}>
+        {/* Left: Chat */}
+        <div style={styles.leftPanel}>
+          <DropZone
+            pendingImages={pendingImages}
+            pendingGlbs={pendingGlbs}
+            onImagesChange={setPendingImages}
+            onGlbsChange={setPendingGlbs}
+          />
+          <ChatPanel
+            onSend={sceneGraph ? handleRefine : handleSend}
+            loading={loading}
+            hasScene={!!sceneGraph}
+          />
+        </div>
+
+        {/* Right: Preview / Scene Graph */}
+        <div style={styles.rightPanel}>
+          <div style={styles.tabs}>
+            {['preview', 'graph'].map(tab => (
+              <button
+                key={tab}
+                style={{ ...styles.tab, ...(activeTab === tab ? styles.tabActive : {}) }}
+                onClick={() => setActiveTab(tab)}
+              >
+                {tab === 'preview' ? '3D Preview' : 'Scene Graph'}
+              </button>
+            ))}
+          </div>
+
+          <div style={styles.tabContent}>
+            {activeTab === 'preview' && (
+              <ScenePreview glbUrl={glbUrl} sceneGraph={sceneGraph} />
+            )}
+            {activeTab === 'graph' && (
+              <SceneGraph sceneGraph={sceneGraph} />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Error toast */}
+      {error && (
+        <div style={styles.errorToast}>
+          <strong>Error:</strong> {error}
+          <button style={styles.toastClose} onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const styles = {
+  root: {
+    display: 'flex', flexDirection: 'column', height: '100vh',
+    background: '#0f0f13', color: '#e8e8f0',
+  },
+  header: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '0 20px', height: 52, background: '#16161e',
+    borderBottom: '1px solid #2a2a3a', flexShrink: 0,
+  },
+  logo: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    fontWeight: 700, fontSize: 16, letterSpacing: '-0.01em',
+  },
+  headerRight: { display: 'flex', gap: 10, alignItems: 'center' },
+  btnRender: {
+    padding: '6px 16px', borderRadius: 6, border: 'none', cursor: 'pointer',
+    background: '#7c6af7', color: '#fff', fontWeight: 600, fontSize: 13,
+  },
+  btnNew: {
+    padding: '6px 14px', borderRadius: 6, border: '1px solid #3a3a4a',
+    cursor: 'pointer', background: 'transparent', color: '#b0b0c0', fontSize: 13,
+  },
+  main: { display: 'flex', flex: 1, overflow: 'hidden' },
+  leftPanel: {
+    width: 380, display: 'flex', flexDirection: 'column',
+    borderRight: '1px solid #2a2a3a', flexShrink: 0,
+  },
+  rightPanel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  tabs: {
+    display: 'flex', borderBottom: '1px solid #2a2a3a',
+    background: '#16161e', flexShrink: 0,
+  },
+  tab: {
+    padding: '10px 20px', border: 'none', background: 'transparent',
+    color: '#888', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+  },
+  tabActive: {
+    color: '#e8e8f0', borderBottom: '2px solid #7c6af7',
+  },
+  tabContent: { flex: 1, overflow: 'hidden', display: 'flex' },
+  errorToast: {
+    position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
+    background: '#3a1515', border: '1px solid #7a2020', borderRadius: 8,
+    padding: '12px 20px', maxWidth: 600, display: 'flex', gap: 12, alignItems: 'flex-start',
+    fontSize: 13, zIndex: 1000,
+  },
+  toastClose: {
+    background: 'none', border: 'none', color: '#e8e8f0',
+    cursor: 'pointer', fontSize: 14, padding: 0, flexShrink: 0,
+  },
+}

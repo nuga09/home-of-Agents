@@ -1,0 +1,233 @@
+"""
+Part library — canonical assembly templates fed to Claude as context.
+These guide the LLM toward producing geometrically correct scene graphs.
+"""
+
+PART_TEMPLATES = {
+    "bicycle": {
+        "description": "A bicycle assembled from frame, wheels, handlebars, seat, pedals, and chain ring.",
+        "parts": [
+            {"id": "frame", "type": "cylinder", "params": {"radius": 0.04, "depth": 1.0},
+             "position": [0, 0, 0.5], "rotation_euler": [0, 1.5708, 0],
+             "material": {"base_color": [0.8, 0.1, 0.1, 1], "metallic": 0.9, "roughness": 0.2}},
+            {"id": "wheel_rear", "type": "torus", "params": {"major_radius": 0.33, "minor_radius": 0.045},
+             "position": [-0.55, 0, 0.33], "rotation_euler": [1.5708, 0, 0],
+             "material": {"base_color": [0.05, 0.05, 0.05, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "wheel_front", "type": "torus", "params": {"major_radius": 0.33, "minor_radius": 0.045},
+             "position": [0.55, 0, 0.33], "rotation_euler": [1.5708, 0, 0],
+             "material": {"base_color": [0.05, 0.05, 0.05, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "handlebar", "type": "cylinder", "params": {"radius": 0.02, "depth": 0.55},
+             "position": [0.55, 0, 0.9], "rotation_euler": [0, 0, 0],
+             "material": {"base_color": [0.7, 0.7, 0.7, 1], "metallic": 0.95, "roughness": 0.15}},
+            {"id": "seat", "type": "cube", "params": {"size": [0.28, 0.12, 0.04]},
+             "position": [-0.1, 0, 0.95],
+             "material": {"base_color": [0.1, 0.1, 0.1, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "seat_post", "type": "cylinder", "params": {"radius": 0.02, "depth": 0.4},
+             "position": [-0.1, 0, 0.73],
+             "material": {"base_color": [0.7, 0.7, 0.7, 1], "metallic": 0.95, "roughness": 0.15}},
+            {"id": "chain_ring", "type": "torus", "params": {"major_radius": 0.14, "minor_radius": 0.015},
+             "position": [0, 0, 0.33], "rotation_euler": [1.5708, 0, 0],
+             "material": {"base_color": [0.8, 0.8, 0.1, 1], "metallic": 1.0, "roughness": 0.1}},
+            {"id": "pedal_L", "type": "cube", "params": {"size": [0.1, 0.04, 0.015]},
+             "position": [-0.14, 0.12, 0.33],
+             "material": {"base_color": [0.2, 0.2, 0.2, 1], "roughness": 0.7, "metallic": 0.3}},
+            {"id": "pedal_R", "type": "cube", "params": {"size": [0.1, 0.04, 0.015]},
+             "position": [0.14, -0.12, 0.33],
+             "material": {"base_color": [0.2, 0.2, 0.2, 1], "roughness": 0.7, "metallic": 0.3}},
+        ]
+    },
+
+    "chair": {
+        "description": "A chair assembled from seat, backrest, and four legs.",
+        "parts": [
+            {"id": "seat", "type": "cube", "params": {"size": [0.5, 0.5, 0.05]},
+             "position": [0, 0, 0.45],
+             "material": {"base_color": [0.55, 0.35, 0.15, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "backrest", "type": "cube", "params": {"size": [0.5, 0.04, 0.5]},
+             "position": [0, -0.23, 0.72],
+             "material": {"base_color": [0.55, 0.35, 0.15, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "leg_FL", "type": "cylinder", "params": {"radius": 0.025, "depth": 0.45},
+             "position": [0.22, 0.22, 0.22],
+             "material": {"base_color": [0.4, 0.25, 0.1, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "leg_FR", "type": "cylinder", "params": {"radius": 0.025, "depth": 0.45},
+             "position": [-0.22, 0.22, 0.22],
+             "material": {"base_color": [0.4, 0.25, 0.1, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "leg_BL", "type": "cylinder", "params": {"radius": 0.025, "depth": 0.45},
+             "position": [0.22, -0.22, 0.22],
+             "material": {"base_color": [0.4, 0.25, 0.1, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "leg_BR", "type": "cylinder", "params": {"radius": 0.025, "depth": 0.45},
+             "position": [-0.22, -0.22, 0.22],
+             "material": {"base_color": [0.4, 0.25, 0.1, 1], "roughness": 0.9, "metallic": 0}},
+        ]
+    },
+
+    "table": {
+        "description": "A table with a flat top and four legs.",
+        "parts": [
+            {"id": "top", "type": "cube", "params": {"size": [1.2, 0.7, 0.05]},
+             "position": [0, 0, 0.73],
+             "material": {"base_color": [0.6, 0.4, 0.2, 1], "roughness": 0.7, "metallic": 0}},
+            {"id": "leg_FL", "type": "cylinder", "params": {"radius": 0.04, "depth": 0.7},
+             "position": [0.55, 0.3, 0.35],
+             "material": {"base_color": [0.5, 0.3, 0.1, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "leg_FR", "type": "cylinder", "params": {"radius": 0.04, "depth": 0.7},
+             "position": [-0.55, 0.3, 0.35],
+             "material": {"base_color": [0.5, 0.3, 0.1, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "leg_BL", "type": "cylinder", "params": {"radius": 0.04, "depth": 0.7},
+             "position": [0.55, -0.3, 0.35],
+             "material": {"base_color": [0.5, 0.3, 0.1, 1], "roughness": 0.8, "metallic": 0}},
+            {"id": "leg_BR", "type": "cylinder", "params": {"radius": 0.04, "depth": 0.7},
+             "position": [-0.55, -0.3, 0.35],
+             "material": {"base_color": [0.5, 0.3, 0.1, 1], "roughness": 0.8, "metallic": 0}},
+        ]
+    },
+
+    "female_human": {
+        "description": (
+            "Female human figure using metaballs for organic seamless blending. "
+            "Female proportions: hips wider than shoulders (~1.15x), hourglass waist, "
+            "fuller thighs, smaller ribcage. All parts share a single metaball object."
+        ),
+        "metaball_group": "human_body",
+        "parts": [
+            # Core torso
+            {"id": "pelvis",    "type": "metaball", "params": {"radius": 0.22, "stiffness": 1.2},
+             "position": [0, 0, 0.92], "material_group": "skin"},
+            {"id": "abdomen",   "type": "metaball", "params": {"radius": 0.15, "stiffness": 1.0},
+             "position": [0, 0, 1.08], "material_group": "skin"},
+            {"id": "ribcage",   "type": "metaball", "params": {"radius": 0.19, "stiffness": 1.2},
+             "position": [0, 0, 1.24], "material_group": "skin"},
+            {"id": "chest_L",   "type": "metaball", "params": {"radius": 0.09, "stiffness": 0.8},
+             "position": [0.08, 0.04, 1.22], "material_group": "skin"},
+            {"id": "chest_R",   "type": "metaball", "params": {"radius": 0.09, "stiffness": 0.8},
+             "position": [-0.08, 0.04, 1.22], "material_group": "skin"},
+            {"id": "neck",      "type": "metaball", "params": {"radius": 0.065, "stiffness": 1.0},
+             "position": [0, 0, 1.42], "material_group": "skin"},
+            {"id": "skull",     "type": "metaball", "params": {"radius": 0.115, "stiffness": 1.1},
+             "position": [0, 0, 1.57], "material_group": "skin"},
+            # Hips — wider than ribcage
+            {"id": "hip_L",     "type": "metaball", "params": {"radius": 0.135, "stiffness": 0.9},
+             "position": [0.175, 0, 0.96], "material_group": "skin"},
+            {"id": "hip_R",     "type": "metaball", "params": {"radius": 0.135, "stiffness": 0.9},
+             "position": [-0.175, 0, 0.96], "material_group": "skin"},
+            # Upper arms (shoulders narrow)
+            {"id": "shoulder_L","type": "metaball", "params": {"radius": 0.07, "stiffness": 0.9},
+             "position": [0.22, 0, 1.28], "material_group": "skin"},
+            {"id": "shoulder_R","type": "metaball", "params": {"radius": 0.07, "stiffness": 0.9},
+             "position": [-0.22, 0, 1.28], "material_group": "skin"},
+            {"id": "upper_arm_L","type": "metaball","params": {"radius": 0.055, "stiffness": 0.85},
+             "position": [0.265, 0, 1.13], "material_group": "skin"},
+            {"id": "upper_arm_R","type": "metaball","params": {"radius": 0.055, "stiffness": 0.85},
+             "position": [-0.265, 0, 1.13], "material_group": "skin"},
+            {"id": "forearm_L", "type": "metaball", "params": {"radius": 0.04, "stiffness": 0.8},
+             "position": [0.285, 0, 0.95], "material_group": "skin"},
+            {"id": "forearm_R", "type": "metaball", "params": {"radius": 0.04, "stiffness": 0.8},
+             "position": [-0.285, 0, 0.95], "material_group": "skin"},
+            {"id": "hand_L",    "type": "metaball", "params": {"radius": 0.035, "stiffness": 0.75},
+             "position": [0.295, 0, 0.82], "material_group": "skin"},
+            {"id": "hand_R",    "type": "metaball", "params": {"radius": 0.035, "stiffness": 0.75},
+             "position": [-0.295, 0, 0.82], "material_group": "skin"},
+            # Legs — fuller thighs
+            {"id": "thigh_L",   "type": "metaball", "params": {"radius": 0.11, "stiffness": 1.0},
+             "position": [0.115, 0, 0.68], "material_group": "skin"},
+            {"id": "thigh_R",   "type": "metaball", "params": {"radius": 0.11, "stiffness": 1.0},
+             "position": [-0.115, 0, 0.68], "material_group": "skin"},
+            {"id": "knee_L",    "type": "metaball", "params": {"radius": 0.075, "stiffness": 0.9},
+             "position": [0.115, 0, 0.5], "material_group": "skin"},
+            {"id": "knee_R",    "type": "metaball", "params": {"radius": 0.075, "stiffness": 0.9},
+             "position": [-0.115, 0, 0.5], "material_group": "skin"},
+            {"id": "calf_L",    "type": "metaball", "params": {"radius": 0.065, "stiffness": 0.85},
+             "position": [0.115, 0, 0.33], "material_group": "skin"},
+            {"id": "calf_R",    "type": "metaball", "params": {"radius": 0.065, "stiffness": 0.85},
+             "position": [-0.115, 0, 0.33], "material_group": "skin"},
+            {"id": "foot_L",    "type": "metaball", "params": {"radius": 0.055, "stiffness": 0.8},
+             "position": [0.115, 0.06, 0.1], "material_group": "skin"},
+            {"id": "foot_R",    "type": "metaball", "params": {"radius": 0.055, "stiffness": 0.8},
+             "position": [-0.115, 0.06, 0.1], "material_group": "skin"},
+        ],
+        "material_groups": {
+            "skin": {"base_color": [0.91, 0.73, 0.60, 1], "roughness": 0.6,
+                     "metallic": 0, "subsurface": 0.05,
+                     "subsurface_color": [0.95, 0.5, 0.4, 1]}
+        }
+    },
+
+    "tree": {
+        "description": "A stylised tree: cylindrical trunk with stacked spherical canopy layers.",
+        "parts": [
+            {"id": "trunk",    "type": "cylinder", "params": {"radius": 0.12, "depth": 1.2},
+             "position": [0, 0, 0.6],
+             "material": {"base_color": [0.35, 0.2, 0.08, 1], "roughness": 1.0, "metallic": 0}},
+            {"id": "canopy_lo","type": "sphere",   "params": {"radius": 0.7},
+             "position": [0, 0, 1.7],
+             "material": {"base_color": [0.1, 0.55, 0.1, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "canopy_mid","type": "sphere",  "params": {"radius": 0.55},
+             "position": [0, 0, 2.1],
+             "material": {"base_color": [0.12, 0.6, 0.12, 1], "roughness": 0.9, "metallic": 0}},
+            {"id": "canopy_hi","type": "sphere",   "params": {"radius": 0.38},
+             "position": [0, 0, 2.45],
+             "material": {"base_color": [0.15, 0.65, 0.15, 1], "roughness": 0.9, "metallic": 0}},
+        ]
+    },
+}
+
+
+SCENE_GRAPH_SCHEMA = """
+{
+  "scene_id": "<uuid string>",
+  "description": "<one-line scene description>",
+  "camera": {
+    "location": [x, y, z],
+    "look_at": [x, y, z],
+    "lens_mm": 50
+  },
+  "lighting": {
+    "sun_energy": 3.0,
+    "sun_rotation_euler": [0.6, 0, 0.8],
+    "ambient_strength": 0.3
+  },
+  "objects": [
+    {
+      "id": "<unique snake_case id>",
+      "name": "<human readable name>",
+      "type": "cylinder | sphere | cube | torus | cone | plane | metaball | imported_glb",
+      "params": {
+        // cylinder:  { "radius": float, "depth": float }
+        // sphere:    { "radius": float }
+        // cube:      { "size": [x, y, z] }
+        // torus:     { "major_radius": float, "minor_radius": float }
+        // cone:      { "radius1": float, "radius2": float, "depth": float }
+        // plane:     { "size": float }
+        // metaball:  { "radius": float, "stiffness": float }
+        // imported_glb: { "filepath": "<upload path>" }
+      },
+      "metaball_group": "<shared group name for metaballs that blend together, null otherwise>",
+      "position": [x, y, z],
+      "rotation_euler": [rx, ry, rz],
+      "scale": [sx, sy, sz],
+      "parent": "<parent object id or null>",
+      "material": {
+        "name": "<material name>",
+        "base_color": [r, g, b, a],
+        "roughness": float,
+        "metallic": float,
+        "emission_color": [r, g, b, a],
+        "emission_strength": float,
+        "subsurface": float,
+        "subsurface_color": [r, g, b, a],
+        "alpha": float
+      }
+    }
+  ]
+}
+"""
+
+
+def get_template_context() -> str:
+    """Return a formatted string of all templates for Claude's system prompt."""
+    lines = ["## Known Assembly Templates\n"]
+    for key, tpl in PART_TEMPLATES.items():
+        lines.append(f"### {key}\n{tpl['description']}\n")
+        parts_preview = [p["id"] for p in tpl["parts"]]
+        lines.append(f"Parts: {', '.join(parts_preview)}\n")
+    return "\n".join(lines)

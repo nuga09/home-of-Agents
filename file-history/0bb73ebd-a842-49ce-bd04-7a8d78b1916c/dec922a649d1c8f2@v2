@@ -1,0 +1,54 @@
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { getCurrentUser } from "@/lib/currentUser";
+import { startOfTodayLocal } from "@/lib/dates";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
+
+  const serviceDate = startOfTodayLocal();
+
+  const [launch, retrieval, launchedBookings, retrievedVesselIds, dailyMessage] = await Promise.all([
+    db.booking.count({ where: { type: "LAUNCH", serviceDate, status: "PENDING" } }),
+    db.booking.count({ where: { type: "RETRIEVAL", serviceDate, status: "PENDING" } }),
+    // Vessels with a completed launch today
+    db.booking.findMany({
+      where: { type: "LAUNCH", serviceDate, status: "COMPLETED" },
+      orderBy: { completedAt: "asc" },
+      select: {
+        id: true,
+        completedAt: true,
+        vessel: { select: { id: true, boatName: true, yardNumber: true } },
+      },
+    }),
+    // Vessels that have already been retrieved today (exclude from "in water")
+    db.booking.findMany({
+      where: { type: "RETRIEVAL", serviceDate, status: "COMPLETED" },
+      select: { vesselId: true },
+    }),
+    // Today's daily message
+    db.dailyMessage.findUnique({
+      where: { serviceDate },
+      select: { message: true, launchStartTime: true, retrievalStartTime: true },
+    }),
+  ]);
+
+  const retrievedIds = new Set(retrievedVesselIds.map((r) => r.vesselId));
+  const inWater = launchedBookings.filter((b) => !retrievedIds.has(b.vessel.id));
+
+  return NextResponse.json({
+    launch,
+    retrieval,
+    launched: inWater.length,
+    launchedVessels: inWater.map((b) => ({
+      id: b.vessel.id,
+      boatName: b.vessel.boatName,
+      yardNumber: b.vessel.yardNumber,
+      launchedAt: b.completedAt,
+    })),
+    dailyMessage: dailyMessage ?? null,
+  });
+}

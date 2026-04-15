@@ -1,0 +1,746 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+
+// ── Types ──────────────────────────────────────────────────────────
+interface TideEvent {
+  time: string;
+  height: number;
+  type: "high" | "low";
+}
+
+interface Conditions {
+  temperature: number | null;
+  windSpeed: number | null;
+  windDirection: number | null;
+  weatherCode: number | null;
+  waveHeight: number | null;
+  wavePeriod: number | null;
+  sunrise?: string | null;
+  sunset?: string | null;
+  tides?: TideEvent[] | null;
+  isForecast?: boolean;
+}
+
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+function currentHour(): number {
+  return new Date().getHours();
+}
+function maxDateStr(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 15);
+  return d.toISOString().slice(0, 10);
+}
+function fmtHour(h: number): string {
+  const suffix = h < 12 ? "AM" : "PM";
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${String(h12).padStart(2, "0")}:00 ${suffix}`;
+}
+function fmtSunTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+  catch { return ""; }
+}
+
+interface GeoResult {
+  id: number;
+  name: string;
+  country: string;
+  admin1?: string;
+  latitude: number;
+  longitude: number;
+  timezone: string;
+}
+
+// ── WMO weather code helpers ───────────────────────────────────────
+function weatherLabel(code: number | null): string {
+  if (code === null) return "—";
+  if (code === 0) return "Clear sky";
+  if (code <= 3) return ["", "Mainly clear", "Partly cloudy", "Overcast"][code] ?? "—";
+  if (code <= 48) return "Fog";
+  if (code <= 55) return "Drizzle";
+  if (code <= 65) return "Rain";
+  if (code <= 77) return "Snow";
+  if (code <= 82) return "Showers";
+  if (code <= 99) return "Thunderstorm";
+  return "—";
+}
+
+function WeatherIcon({ code, className = "h-5 w-5" }: { code: number | null; className?: string }) {
+  if (code === null) return <CloudIcon className={className} />;
+  if (code === 0) return <SunIcon className={className} />;
+  if (code <= 3) return <CloudSunIcon className={className} />;
+  if (code <= 48) return <FogIcon className={className} />;
+  if (code <= 77) return <RainIcon className={className} />;
+  if (code <= 82) return <RainIcon className={className} />;
+  return <ThunderIcon className={className} />;
+}
+
+function windCardinal(deg: number | null): string {
+  if (deg === null) return "—";
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
+function localTime(tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date());
+}
+
+// ── Main widget ────────────────────────────────────────────────────
+export function ConditionsWidget() {
+  const [homeData, setHomeData] = useState<Conditions | null>(null);
+  const [homeTime, setHomeTime] = useState("");
+  const [homeLoading, setHomeLoading] = useState(true);
+  const [homeName, setHomeName] = useState("Your Location");
+  const [homeTz, setHomeTz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<GeoResult[]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [destLocation, setDestLocation] = useState<GeoResult | null>(null);
+  const [destData, setDestData] = useState<Conditions | null>(null);
+  const [destTime, setDestTime] = useState("");
+  const [destLoading, setDestLoading] = useState(false);
+
+  // Forecast selectors
+  const [selDate, setSelDate] = useState(todayStr);
+  const [selHour, setSelHour] = useState<number>(currentHour);
+  const isForecastMode = selDate !== todayStr() || selHour !== currentHour();
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Fetch home conditions using browser geolocation
+  useEffect(() => {
+    const fetchConditions = async (lat: number, lon: number, tz: string) => {
+      try {
+        const res = await fetch(`/api/conditions?lat=${lat}&lon=${lon}&timezone=${encodeURIComponent(tz)}`);
+        setHomeData(await res.json());
+      } finally {
+        setHomeLoading(false);
+      }
+    };
+
+    if (!navigator.geolocation) {
+      setHomeLoading(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        setHomeTz(tz);
+        // Try to resolve a friendly name via reverse geocoding
+        try {
+          const res = await fetch(`/api/geocode?lat=${latitude.toFixed(4)}&lon=${longitude.toFixed(4)}`);
+          const data = await res.json();
+          if (Array.isArray(data) && data[0]) {
+            const g = data[0] as GeoResult;
+            setHomeName(`${g.name}${g.admin1 ? `, ${g.admin1}` : ""}`);
+            if (g.timezone) setHomeTz(g.timezone);
+          }
+        } catch { /* ignore — keep "Your Location" */ }
+        await fetchConditions(latitude, longitude, tz);
+      },
+      () => {
+        // Geolocation denied — show no data rather than wrong city
+        setHomeLoading(false);
+      },
+      { timeout: 8000 },
+    );
+  }, []);
+
+  // Clock tick
+  useEffect(() => {
+    const tick = () => {
+      setHomeTime(localTime(homeTz));
+      if (destLocation && !isForecastMode) setDestTime(localTime(destLocation.timezone));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [homeTz, destLocation, isForecastMode]);
+
+  // Debounced geocode search
+  const handleQueryChange = (val: string) => {
+    setQuery(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (val.trim().length < 2) { setSuggestions([]); setSuggestionsOpen(false); return; }
+    debounceRef.current = setTimeout(async () => {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(val)}`);
+      const data = await res.json();
+      setSuggestions(Array.isArray(data) ? data : []);
+      setSuggestionsOpen(true);
+    }, 300);
+  };
+
+  const fetchDest = useCallback(async (loc: GeoResult, date: string, hour: number) => {
+    setDestLoading(true);
+    setDestData(null);
+    const isToday = date === todayStr() && hour === currentHour();
+    try {
+      const params = new URLSearchParams({
+        lat: String(loc.latitude),
+        lon: String(loc.longitude),
+        timezone: loc.timezone,
+        ...(!isToday ? { date, hour: String(hour) } : {}),
+      });
+      const res = await fetch(`/api/conditions?${params}`);
+      setDestData(await res.json());
+    } finally {
+      setDestLoading(false);
+    }
+  }, []);
+
+  const selectDestination = useCallback((loc: GeoResult) => {
+    setDestLocation(loc);
+    setQuery(`${loc.name}, ${loc.admin1 ?? loc.country}`);
+    setSuggestionsOpen(false);
+    fetchDest(loc, selDate, selHour);
+  }, [fetchDest, selDate, selHour]);
+
+  const handleGetForecast = () => {
+    if (destLocation) fetchDest(destLocation, selDate, selHour);
+  };
+
+  const forecastLabel = isForecastMode
+    ? `${new Date(selDate + "T12:00:00").toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" })} at ${fmtHour(selHour)}`
+    : null;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      {/* ── Home Conditions ── */}
+      <ConditionsPanel
+        title="My Location"
+        location={homeName}
+        time={homeTime}
+        data={homeData}
+        loading={homeLoading}
+        accent="sky"
+      />
+
+      {/* ── Destination Conditions ── */}
+      <div className="relative overflow-hidden rounded-2xl border border-teal-200/60 bg-white/70 shadow-sm backdrop-blur-sm">
+        {/* header */}
+        <div className="flex items-center justify-between border-b border-teal-100/60 px-5 pt-4 pb-3">
+          <div className="flex items-center gap-2">
+            <AnchorIcon className="h-4 w-4 text-teal-600" />
+            <span className="text-xs font-semibold uppercase tracking-widest text-teal-700">Destination Conditions</span>
+          </div>
+          {isForecastMode && (
+            <span className="rounded-full bg-teal-100 px-2.5 py-0.5 text-[10px] font-semibold text-teal-700">Forecast</span>
+          )}
+        </div>
+
+        <div className="space-y-2 px-4 pt-3 pb-2">
+          {/* Location search */}
+          <div className="relative">
+            <div className="flex items-center gap-2 rounded-xl border border-teal-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-teal-400/50">
+              <SearchIcon className="h-4 w-4 flex-shrink-0 text-teal-400" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => handleQueryChange(e.target.value)}
+                onFocus={() => suggestions.length > 0 && setSuggestionsOpen(true)}
+                onBlur={() => setTimeout(() => setSuggestionsOpen(false), 150)}
+                placeholder="Search a location…"
+                className="w-full bg-transparent text-sm text-sky-900 placeholder-sky-400/60 outline-none"
+              />
+              {query && (
+                <button
+                  onClick={() => { setQuery(""); setSuggestions([]); setDestLocation(null); setDestData(null); }}
+                  className="text-sky-400 hover:text-sky-600"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            {suggestionsOpen && suggestions.length > 0 && (
+              <ul className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-xl border border-teal-100 bg-white shadow-lg">
+                {suggestions.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      onMouseDown={() => selectDestination(s)}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-sky-900 hover:bg-teal-50"
+                    >
+                      <PinIcon className="h-3.5 w-3.5 flex-shrink-0 text-teal-500" />
+                      <span className="font-medium">{s.name}</span>
+                      <span className="text-xs text-sky-500">{[s.admin1, s.country].filter(Boolean).join(", ")}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Date + Hour pickers */}
+          <div className="flex gap-2">
+            <div className="flex flex-1 items-center gap-1.5 rounded-xl border border-teal-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-teal-400/50">
+              <CalendarIcon className="h-4 w-4 flex-shrink-0 text-teal-400" />
+              <input
+                type="date"
+                value={selDate}
+                min={todayStr()}
+                max={maxDateStr()}
+                onChange={(e) => setSelDate(e.target.value || todayStr())}
+                className="w-full bg-transparent text-sm text-sky-900 outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-1.5 rounded-xl border border-teal-200 bg-white px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-teal-400/50">
+              <ClockIcon className="h-4 w-4 flex-shrink-0 text-teal-400" />
+              <select
+                value={selHour}
+                onChange={(e) => setSelHour(Number(e.target.value))}
+                className="bg-transparent text-sm text-sky-900 outline-none"
+              >
+                {Array.from({ length: 24 }, (_, h) => (
+                  <option key={h} value={h}>{fmtHour(h)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Get forecast button — shown when pickers differ from "now" */}
+          {isForecastMode && destLocation && (
+            <button
+              onClick={handleGetForecast}
+              disabled={destLoading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-teal-500 disabled:opacity-60"
+            >
+              {destLoading ? (
+                <span className="animate-pulse">Fetching forecast…</span>
+              ) : (
+                <>
+                  <SearchIcon className="h-4 w-4" />
+                  Get forecast for {forecastLabel}
+                </>
+              )}
+            </button>
+          )}
+        </div>
+
+        {/* Results */}
+        {destLocation ? (
+          <div className="px-4 pb-4">
+            <ConditionStats
+              location={`${destLocation.name}, ${destLocation.admin1 ?? destLocation.country}`}
+              time={isForecastMode ? forecastLabel ?? "" : destTime}
+              data={destData}
+              loading={destLoading}
+              accent="teal"
+              forecastLabel={forecastLabel}
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center px-4 pb-8 pt-2 text-center">
+            <CompassIcon className="h-10 w-10 text-teal-200" />
+            <p className="mt-2 text-xs text-sky-500">Search a location to see conditions or forecast.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Shared panel ───────────────────────────────────────────────────
+function ConditionsPanel({
+  title, location, time, data, loading, accent,
+}: {
+  title: string;
+  location: string;
+  time: string;
+  data: Conditions | null;
+  loading: boolean;
+  accent: "sky" | "teal";
+}) {
+  const borderColor = accent === "sky" ? "border-sky-200/60" : "border-teal-200/60";
+  const headerBorder = accent === "sky" ? "border-sky-100/60" : "border-teal-100/60";
+  const iconColor = accent === "sky" ? "text-sky-600" : "text-teal-600";
+  const labelColor = accent === "sky" ? "text-sky-700" : "text-teal-700";
+
+  return (
+    <div className={`overflow-hidden rounded-2xl border ${borderColor} bg-white/70 shadow-sm backdrop-blur-sm`}>
+      <div className={`flex items-center gap-2 border-b ${headerBorder} px-5 pt-4 pb-3`}>
+        <HomeIcon className={`h-4 w-4 ${iconColor}`} />
+        <span className={`text-xs font-semibold uppercase tracking-widest ${labelColor}`}>{title}</span>
+      </div>
+      <div className="px-4 pb-4 pt-3">
+        <ConditionStats location={location} time={time} data={data} loading={loading} accent={accent} />
+      </div>
+    </div>
+  );
+}
+
+// ── Stat grid ──────────────────────────────────────────────────────
+function ConditionStats({
+  location, time, data, loading, accent, forecastLabel,
+}: {
+  location: string;
+  time: string;
+  data: Conditions | null;
+  loading: boolean;
+  accent: "sky" | "teal";
+  forecastLabel?: string | null;
+}) {
+  const accentText = accent === "sky" ? "text-sky-600" : "text-teal-600";
+  const accentBg = accent === "sky" ? "bg-sky-50" : "bg-teal-50";
+  const accentBorder = accent === "sky" ? "border-sky-100" : "border-teal-100";
+
+  return (
+    <>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <span className={`truncate text-xs font-semibold ${accentText}`}>{location}</span>
+        {forecastLabel
+          ? <span className="shrink-0 text-xs text-sky-500">{forecastLabel}</span>
+          : <span className="shrink-0 font-mono text-sm font-bold text-sky-900">{time || "—:—:—"}</span>
+        }
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-2 gap-2">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className={`h-16 animate-pulse rounded-xl ${accentBg}`} />
+          ))}
+        </div>
+      ) : data ? (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <StatCard
+              icon={<ThermometerIcon className={`h-5 w-5 ${accentText}`} />}
+              label="Temperature"
+              value={data.temperature !== null ? `${data.temperature.toFixed(1)} °C` : "—"}
+              bg={accentBg}
+              border={accentBorder}
+            />
+            <StatCard
+              icon={<WindIcon className={`h-5 w-5 ${accentText}`} />}
+              label="Wind"
+              value={data.windSpeed !== null ? `${data.windSpeed.toFixed(0)} km/h ${windCardinal(data.windDirection)}` : "—"}
+              bg={accentBg}
+              border={accentBorder}
+            />
+            <StatCard
+              icon={<WaveIcon className={`h-5 w-5 ${accentText}`} />}
+              label="Swell"
+              value={data.waveHeight !== null
+                ? `${data.waveHeight.toFixed(1)} m${data.wavePeriod !== null ? ` · ${data.wavePeriod.toFixed(0)}s` : ""}`
+                : "—"}
+              bg={accentBg}
+              border={accentBorder}
+            />
+            <StatCard
+              icon={<WeatherIcon code={data.weatherCode} className={`h-5 w-5 ${accentText}`} />}
+              label="Sky"
+              value={weatherLabel(data.weatherCode)}
+              bg={accentBg}
+              border={accentBorder}
+            />
+          </div>
+          {(data.sunrise || data.sunset) && (
+            <div className="mt-2 flex items-center gap-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-1.5 text-xs text-sky-600">
+              {data.sunrise && <span>🌅 {fmtSunTime(data.sunrise)}</span>}
+              {data.sunset && <span>🌇 {fmtSunTime(data.sunset)}</span>}
+            </div>
+          )}
+          {data.tides && data.tides.length > 0 && (
+            <div className={`mt-2 rounded-xl border ${accentBorder} ${accentBg} px-3 py-2`}>
+              <div className={`mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider ${accentText}`}>
+                <TideIcon className="h-3.5 w-3.5" />
+                Tides
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                {data.tides.map((t, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                    <span className={`font-semibold ${t.type === "high" ? "text-blue-600" : "text-sky-400"}`}>
+                      {t.type === "high" ? "▲ High" : "▼ Low"}
+                    </span>
+                    <span className="text-sky-900 font-bold">{t.height.toFixed(1)} m</span>
+                    <span className="text-sky-500">{fmtSunTime(t.time)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="py-4 text-center text-xs text-sky-400">No data available.</p>
+      )}
+    </>
+  );
+}
+
+function StatCard({ icon, label, value, bg, border }: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  bg: string;
+  border: string;
+}) {
+  return (
+    <div className={`flex items-start gap-2.5 rounded-xl border ${border} ${bg} px-3 py-2.5`}>
+      <div className="mt-0.5 flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-500">{label}</div>
+        <div className="mt-0.5 truncate text-sm font-bold text-sky-900">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── SVG Icons ──────────────────────────────────────────────────────
+function SunIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" strokeLinecap="round" />
+    </svg>
+  );
+}
+function CloudSunIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M12 3v1M16.95 5.05l-.71.71M19 9h1M16.95 12.95l-.71-.71" strokeLinecap="round" />
+      <circle cx="12" cy="9" r="3" />
+      <path d="M6 18a4 4 0 010-8 5 5 0 019.9-1A4 4 0 0118 18H6z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function CloudIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function FogIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M4 14h16M4 18h10M4 10h12" strokeLinecap="round" />
+      <path d="M6 6a4 4 0 018 0 3 3 0 11-1 5.83" strokeLinecap="round" />
+    </svg>
+  );
+}
+function RainIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M20 16.2A4.5 4.5 0 0017.5 8h-1.8A7 7 0 104 14.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8 19v2M12 17v2M16 19v2" strokeLinecap="round" />
+    </svg>
+  );
+}
+function ThunderIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M19 16.9A5 5 0 0018 7h-1.26A8 8 0 104 15.25" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13 11l-4 6h6l-4 6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function ThermometerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M14 14.76V3.5a2.5 2.5 0 00-5 0v11.26a4.5 4.5 0 105 0z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function WindIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M9.59 4.59A2 2 0 1111 8H2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.59 19.41A2 2 0 1014 16H2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6.8 13.8A2 2 0 1018 12H2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function WaveIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M2 12 Q5 8 8 12 Q11 16 14 12 Q17 8 20 12 Q21.5 14 22 12" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2 17 Q5 13 8 17 Q11 21 14 17 Q17 13 20 17" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function HomeIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" strokeLinejoin="round" />
+      <path d="M9 22V12h6v10" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function AnchorIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <circle cx="12" cy="5" r="3" />
+      <path d="M12 8v13M5 12H2a10 10 0 0020 0h-3" strokeLinecap="round" />
+    </svg>
+  );
+}
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="M21 21l-4.35-4.35" strokeLinecap="round" />
+    </svg>
+  );
+}
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
+    </svg>
+  );
+}
+function PinIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" strokeLinejoin="round" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+function CompassIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function CalendarIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2" strokeLinejoin="round" />
+      <path d="M16 2v4M8 2v4M3 10h18" strokeLinecap="round" />
+    </svg>
+  );
+}
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 6v6l4 2" strokeLinecap="round" />
+    </svg>
+  );
+}
+function TideIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M2 8 Q5 4 8 8 Q11 12 14 8 Q17 4 20 8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2 16 Q5 12 8 16 Q11 20 14 16 Q17 12 20 16" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// ── Compact home-only banner for the homepage ───────────────────────
+export function HomeConditions() {
+  const [data, setData] = useState<Conditions | null>(null);
+  const [time, setTime] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState("Your Location");
+  const [tz, setTz] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+  useEffect(() => {
+    if (!navigator.geolocation) { setLoading(false); return; }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const resolvedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        setTz(resolvedTz);
+        try {
+          const geo = await fetch(`/api/geocode?lat=${latitude.toFixed(4)}&lon=${longitude.toFixed(4)}`);
+          const geoData = await geo.json();
+          if (Array.isArray(geoData) && geoData[0]) {
+            const g = geoData[0] as GeoResult;
+            setName(`${g.name}${g.admin1 ? `, ${g.admin1}` : ""}`);
+            if (g.timezone) setTz(g.timezone);
+          }
+        } catch { /* keep "Your Location" */ }
+        try {
+          const res = await fetch(`/api/conditions?lat=${latitude}&lon=${longitude}&timezone=${encodeURIComponent(resolvedTz)}`);
+          setData(await res.json());
+        } finally {
+          setLoading(false);
+        }
+      },
+      () => setLoading(false),
+      { timeout: 8000 },
+    );
+  }, []);
+
+  useEffect(() => {
+    const tick = () => setTime(localTime(tz));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [tz]);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-sky-200/60 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-sm">
+      {/* Location + clock */}
+      <div className="flex items-center gap-2 min-w-0">
+        <HomeIcon className="h-4 w-4 flex-shrink-0 text-sky-500" />
+        <span className="text-xs font-semibold text-sky-700">{name}</span>
+        <span className="font-mono text-sm font-bold text-sky-900">{time || "—:—:—"}</span>
+      </div>
+
+      <div className="hidden sm:block h-4 w-px bg-sky-200" />
+
+      {loading ? (
+        <div className="flex gap-3">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-5 w-20 animate-pulse rounded-lg bg-sky-100" />)}
+        </div>
+      ) : data ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          {/* Temp */}
+          <div className="flex items-center gap-1.5">
+            <ThermometerIcon className="h-4 w-4 text-sky-500" />
+            <span className="text-sm font-bold text-sky-900">
+              {data.temperature !== null ? `${data.temperature.toFixed(1)} °C` : "—"}
+            </span>
+          </div>
+          {/* Wind */}
+          <div className="flex items-center gap-1.5">
+            <WindIcon className="h-4 w-4 text-sky-500" />
+            <span className="text-sm font-bold text-sky-900">
+              {data.windSpeed !== null ? `${data.windSpeed.toFixed(0)} km/h ${windCardinal(data.windDirection)}` : "—"}
+            </span>
+          </div>
+          {/* Swell */}
+          <div className="flex items-center gap-1.5">
+            <WaveIcon className="h-4 w-4 text-sky-500" />
+            <span className="text-sm font-bold text-sky-900">
+              {data.waveHeight !== null
+                ? `${data.waveHeight.toFixed(1)} m${data.wavePeriod !== null ? ` · ${data.wavePeriod.toFixed(0)}s` : ""}`
+                : "—"}
+            </span>
+          </div>
+          {/* Sky */}
+          <div className="flex items-center gap-1.5">
+            <WeatherIcon code={data.weatherCode} className="h-4 w-4 text-sky-500" />
+            <span className="text-sm font-bold text-sky-900">{weatherLabel(data.weatherCode)}</span>
+          </div>
+          {/* Next tide */}
+          {data.tides && data.tides.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <TideIcon className="h-4 w-4 text-sky-500" />
+              <span className="text-sm font-bold text-sky-900">
+                {data.tides[0].type === "high" ? "▲" : "▼"} {data.tides[0].height.toFixed(1)} m · {fmtSunTime(data.tides[0].time)}
+              </span>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}

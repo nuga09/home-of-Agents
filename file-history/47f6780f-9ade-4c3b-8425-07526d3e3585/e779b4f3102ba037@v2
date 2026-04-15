@@ -1,0 +1,168 @@
+"""
+Sentinel Agent Server — port 8080
+Wraps `claude --print` as an OpenAI-compatible HTTP API.
+Request path: client → here (8080) → claude --print → thinking_stripper (4000) → LiteLLM (4001) → Ollama
+"""
+
+import asyncio
+import json
+import os
+import time
+import uuid
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI(title="Sentinel Agent", version="1.0.0")
+
+CLAUDE_ENV = {
+    **os.environ,
+    "ANTHROPIC_AUTH_TOKEN": "ollama",
+    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+}
+
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    model: str = "claude-sonnet-4-6"
+    messages: list[ChatMessage]
+    stream: bool = False
+    max_tokens: int | None = None
+
+
+class PromptRequest(BaseModel):
+    prompt: str
+    cwd: str | None = None
+    model: str | None = None
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "service": "sentinel-agent", "port": 8080}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatRequest):
+    # Use the last user message as the prompt
+    prompt = next(
+        (m.content for m in reversed(req.messages) if m.role == "user"),
+        req.messages[-1].content,
+    )
+
+    if req.stream:
+        return StreamingResponse(
+            _stream_claude(prompt, req.model),
+            media_type="text/event-stream",
+        )
+
+    result = await _run_claude(prompt, model=req.model)
+    return _openai_response(result, req.model)
+
+
+@app.post("/run")
+async def run_prompt(req: PromptRequest):
+    result = await _run_claude(req.prompt, cwd=req.cwd, model=req.model)
+    return {"result": result}
+
+
+# ── Core helpers ──────────────────────────────────────────────────────────────
+
+async def _run_claude(prompt: str, cwd: str | None = None, model: str | None = None) -> str:
+    cmd = [
+        "claude", "--print",
+        "--dangerously-skip-permissions",
+        "--output-format", "text",
+    ]
+    if model:
+        cmd += ["--model", model]
+    cmd.append(prompt)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=CLAUDE_ENV,
+        cwd=cwd or os.getcwd(),
+    )
+    stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"claude exited {proc.returncode}: {stderr.decode()[:500]}",
+        )
+
+    return stdout.decode().strip()
+
+
+async def _stream_claude(prompt: str, model: str):
+    cmd = [
+        "claude", "--print",
+        "--dangerously-skip-permissions",
+        "--output-format", "stream-json",
+        "--model", model,
+        prompt,
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=CLAUDE_ENV,
+    )
+
+    completion_id = f"sentinel-{uuid.uuid4().hex[:8]}"
+
+    async for line in proc.stdout:
+        text = line.decode().strip()
+        if not text:
+            continue
+        try:
+            event = json.loads(text)
+            # stream-json emits assistant text chunks
+            if event.get("type") == "text" and event.get("text"):
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": event["text"]},
+                        "finish_reason": None,
+                    }],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except json.JSONDecodeError:
+            pass
+
+    yield "data: [DONE]\n\n"
+    await proc.wait()
+
+
+def _openai_response(content: str, model: str) -> dict:
+    return {
+        "id": f"sentinel-{uuid.uuid4().hex[:8]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

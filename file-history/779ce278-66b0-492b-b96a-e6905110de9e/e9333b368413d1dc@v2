@@ -1,0 +1,444 @@
+"""
+compiler.py — Converts a scene graph JSON dict into an executable Blender Python script.
+
+Supported types: cylinder, sphere, cube, torus, cone, plane, metaball, imported_glb.
+Output: a .py file that, when run headlessly via `blender --background --python script.py`,
+produces a .glb render output.
+"""
+
+from __future__ import annotations
+import json
+import textwrap
+from pathlib import Path
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _vec3(v: list | None, default=(0, 0, 0)) -> tuple:
+    if v and len(v) >= 3:
+        return (float(v[0]), float(v[1]), float(v[2]))
+    return default
+
+def _vec4(v: list | None, default=(1, 1, 1, 1)) -> tuple:
+    if v and len(v) >= 4:
+        return tuple(float(x) for x in v[:4])
+    if v and len(v) == 3:
+        return (float(v[0]), float(v[1]), float(v[2]), 1.0)
+    return default
+
+def _mat_var(obj_id: str) -> str:
+    return f"mat_{obj_id}"
+
+def _obj_var(obj_id: str) -> str:
+    return f"obj_{obj_id}"
+
+
+# ---------------------------------------------------------------------------
+# Material block
+# ---------------------------------------------------------------------------
+
+def _material_block(obj_id: str, mat: dict) -> str:
+    var = _mat_var(obj_id)
+    name = mat.get("name", f"mat_{obj_id}")
+    bc = _vec4(mat.get("base_color"))
+    roughness = float(mat.get("roughness", 0.5))
+    metallic = float(mat.get("metallic", 0.0))
+    alpha = float(mat.get("alpha", 1.0))
+    emission_color = _vec4(mat.get("emission_color", [0, 0, 0, 1]))
+    emission_strength = float(mat.get("emission_strength", 0.0))
+    subsurface = float(mat.get("subsurface", 0.0))
+    ssc = _vec4(mat.get("subsurface_color", [1, 0.8, 0.7, 1]))
+
+    lines = [
+        f'{var} = bpy.data.materials.new(name="{name}")',
+        f"{var}.use_nodes = True",
+        f"_bsdf = {var}.node_tree.nodes['Principled BSDF']",
+        f"_bsdf.inputs['Base Color'].default_value = {bc}",
+        f"_bsdf.inputs['Roughness'].default_value = {roughness}",
+        f"_bsdf.inputs['Metallic'].default_value = {metallic}",
+        f"_bsdf.inputs['Alpha'].default_value = {alpha}",
+    ]
+    if emission_strength > 0:
+        lines += [
+            f"_bsdf.inputs['Emission Color'].default_value = {emission_color}",
+            f"_bsdf.inputs['Emission Strength'].default_value = {emission_strength}",
+        ]
+    if subsurface > 0:
+        lines += [
+            f"_bsdf.inputs['Subsurface Weight'].default_value = {subsurface}",
+            f"_bsdf.inputs['Subsurface Radius'].default_value = {ssc[:3]}",
+        ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Object creation blocks per type
+# ---------------------------------------------------------------------------
+
+def _cylinder_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    radius = float(params.get("radius", 0.5))
+    depth = float(params.get("depth", 1.0))
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_cylinder_add(radius={radius}, depth={depth}, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+    ])
+
+
+def _sphere_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    radius = float(params.get("radius", 0.5))
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_uv_sphere_add(radius={radius}, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+    ])
+
+
+def _cube_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    size = params.get("size", [1, 1, 1])
+    if isinstance(size, (int, float)):
+        size = [size, size, size]
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    # Create unit cube then scale to desired size
+    sx, sy, sz = float(size[0]), float(size[1]), float(size[2])
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_cube_add(size=1, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+        f"{var}.scale = ({sx}, {sy}, {sz})",
+        f"bpy.ops.object.transform_apply(scale=True)",
+    ])
+
+
+def _torus_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    major_r = float(params.get("major_radius", 0.5))
+    minor_r = float(params.get("minor_radius", 0.1))
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_torus_add("
+        f"major_radius={major_r}, minor_radius={minor_r}, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+    ])
+
+
+def _cone_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    r1 = float(params.get("radius1", 0.5))
+    r2 = float(params.get("radius2", 0.0))
+    depth = float(params.get("depth", 1.0))
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_cone_add("
+        f"radius1={r1}, radius2={r2}, depth={depth}, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+    ])
+
+
+def _plane_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    size = float(params.get("size", 2.0))
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f"bpy.ops.mesh.primitive_plane_add(size={size}, location={loc})",
+        f"{var} = bpy.context.active_object",
+        f'{var}.name = "{obj_id}"',
+    ])
+
+
+def _metaball_block(obj_id: str, obj: dict, group_vars: dict[str, str]) -> str:
+    """
+    Metaballs in a shared group all blend seamlessly. We reuse one bpy.data.metaballs
+    object per group and add elements to it.
+    """
+    params = obj.get("params", {})
+    radius = float(params.get("radius", 0.3))
+    stiffness = float(params.get("stiffness", 1.0))
+    pos = _vec3(obj.get("position"))
+    group = obj.get("metaball_group", obj_id)
+    var = _obj_var(obj_id)
+
+    if group not in group_vars:
+        # First metaball in this group — create the metaball data object
+        mball_data_var = f"mball_{group}"
+        mball_obj_var = f"mball_obj_{group}"
+        group_vars[group] = (mball_data_var, mball_obj_var)
+        lines = [
+            f'{mball_data_var} = bpy.data.metaballs.new("{group}")',
+            f'{mball_data_var}.resolution = 0.05',
+            f'{mball_data_var}.render_resolution = 0.02',
+            f'{mball_obj_var} = bpy.data.objects.new("{group}", {mball_data_var})',
+            f"bpy.context.collection.objects.link({mball_obj_var})",
+        ]
+    else:
+        mball_data_var, mball_obj_var = group_vars[group]
+        lines = []
+
+    elem_var = f"elem_{obj_id}"
+    lines += [
+        f"{elem_var} = {mball_data_var}.elements.new()",
+        f"{elem_var}.type = 'BALL'",
+        f"{elem_var}.co = {pos}",
+        f"{elem_var}.radius = {radius}",
+        f"{elem_var}.stiffness = {stiffness}",
+        f"{var} = {mball_obj_var}",   # alias so material assignment works uniformly
+    ]
+    return "\n".join(lines)
+
+
+def _imported_glb_block(obj_id: str, obj: dict) -> str:
+    params = obj.get("params", {})
+    filepath = params.get("filepath", "")
+    loc = _vec3(obj.get("position"))
+    var = _obj_var(obj_id)
+    return "\n".join([
+        f'bpy.ops.import_scene.gltf(filepath="{filepath}")',
+        f"_imported = bpy.context.selected_objects",
+        f"{var} = _imported[0] if _imported else None",
+        f"if {var}:",
+        f'    {var}.name = "{obj_id}"',
+        f"    {var}.location = {loc}",
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Rotation / scale / parent
+# ---------------------------------------------------------------------------
+
+def _transform_block(obj_id: str, obj: dict) -> str:
+    var = _obj_var(obj_id)
+    lines = []
+    rot = obj.get("rotation_euler")
+    if rot and any(v != 0 for v in rot):
+        rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
+        lines.append(f"{var}.rotation_euler = ({rx}, {ry}, {rz})")
+
+    scale = obj.get("scale")
+    if scale and scale != [1, 1, 1]:
+        sx, sy, sz = float(scale[0]), float(scale[1]), float(scale[2])
+        lines.append(f"{var}.scale = ({sx}, {sy}, {sz})")
+    return "\n".join(lines)
+
+
+def _parent_block(obj_id: str, parent_id: str | None) -> str:
+    if not parent_id:
+        return ""
+    var = _obj_var(obj_id)
+    pvar = _obj_var(parent_id)
+    return "\n".join([
+        f"if {pvar} and {var}:",
+        f"    {var}.parent = {pvar}",
+        f"    {var}.matrix_parent_inverse = {pvar}.matrix_world.inverted()",
+    ])
+
+
+def _material_assign_block(obj_id: str) -> str:
+    var = _obj_var(obj_id)
+    mvar = _mat_var(obj_id)
+    return "\n".join([
+        f"if {var} and {var}.data and hasattr({var}.data, 'materials'):",
+        f"    if {var}.data.materials:",
+        f"        {var}.data.materials[0] = {mvar}",
+        f"    else:",
+        f"        {var}.data.materials.append({mvar})",
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Camera and lighting
+# ---------------------------------------------------------------------------
+
+def _camera_block(camera: dict) -> str:
+    loc = _vec3(camera.get("location", [3, -5, 3]))
+    look_at = _vec3(camera.get("look_at", [0, 0, 0]))
+    lens = float(camera.get("lens_mm", 50))
+    return textwrap.dedent(f"""
+        # Camera
+        bpy.ops.object.camera_add(location={loc})
+        _cam = bpy.context.active_object
+        _cam.name = "SceneCamera"
+        _cam.data.lens = {lens}
+        import mathutils
+        _direction = mathutils.Vector({look_at}) - mathutils.Vector({loc})
+        _rot_quat = _direction.to_track_quat('-Z', 'Y')
+        _cam.rotation_euler = _rot_quat.to_euler()
+        bpy.context.scene.camera = _cam
+    """).strip()
+
+
+def _lighting_block(lighting: dict) -> str:
+    energy = float(lighting.get("sun_energy", 3.0))
+    rot = _vec3(lighting.get("sun_rotation_euler", [0.6, 0, 0.8]))
+    ambient = float(lighting.get("ambient_strength", 0.3))
+    return textwrap.dedent(f"""
+        # Lighting
+        bpy.ops.object.light_add(type='SUN', location=(0, 0, 5))
+        _sun = bpy.context.active_object
+        _sun.data.energy = {energy}
+        _sun.rotation_euler = {rot}
+        bpy.context.scene.world.node_tree.nodes['Background'].inputs[1].default_value = {ambient}
+    """).strip()
+
+
+# ---------------------------------------------------------------------------
+# Main compile function
+# ---------------------------------------------------------------------------
+
+def compile_scene_graph(scene_graph: dict, output_glb: str) -> str:
+    """
+    Compile a scene graph dict into a Blender Python script string.
+
+    Args:
+        scene_graph: The parsed scene graph JSON.
+        output_glb:  Absolute path where the exported .glb should be written.
+
+    Returns:
+        A string containing the full Blender Python script.
+    """
+    objects: list[dict] = scene_graph.get("objects", [])
+    camera: dict = scene_graph.get("camera", {})
+    lighting: dict = scene_graph.get("lighting", {})
+
+    sections: list[str] = []
+
+    # --- Preamble ---
+    sections.append(textwrap.dedent("""
+        import bpy
+        import math
+
+        # Clear scene
+        bpy.ops.object.select_all(action='SELECT')
+        bpy.ops.object.delete(use_global=False)
+        for c in bpy.data.collections:
+            bpy.data.collections.remove(c)
+
+        # Ensure world node tree exists
+        if not bpy.context.scene.world:
+            bpy.context.scene.world = bpy.data.worlds.new("World")
+        bpy.context.scene.world.use_nodes = True
+    """).strip())
+
+    # --- Camera ---
+    sections.append(_camera_block(camera or {}))
+
+    # --- Lighting ---
+    sections.append(_lighting_block(lighting or {}))
+
+    # --- Objects ---
+    # Metaball group registry: group_name → (data_var, obj_var)
+    metaball_groups: dict[str, tuple[str, str]] = {}
+    # Track which metaball groups have received a material assignment
+    metaball_mat_assigned: set[str] = set()
+
+    for obj in objects:
+        obj_id: str = obj.get("id", "unknown")
+        obj_type: str = obj.get("type", "sphere")
+        mat: dict = obj.get("material", {})
+        parent_id: str | None = obj.get("parent")
+
+        part_lines: list[str] = [f"\n# --- {obj_id} ({obj_type}) ---"]
+
+        # Create geometry
+        if obj_type == "cylinder":
+            part_lines.append(_cylinder_block(obj_id, obj))
+        elif obj_type == "sphere":
+            part_lines.append(_sphere_block(obj_id, obj))
+        elif obj_type == "cube":
+            part_lines.append(_cube_block(obj_id, obj))
+        elif obj_type == "torus":
+            part_lines.append(_torus_block(obj_id, obj))
+        elif obj_type == "cone":
+            part_lines.append(_cone_block(obj_id, obj))
+        elif obj_type == "plane":
+            part_lines.append(_plane_block(obj_id, obj))
+        elif obj_type == "metaball":
+            part_lines.append(_metaball_block(obj_id, obj, metaball_groups))
+        elif obj_type == "imported_glb":
+            part_lines.append(_imported_glb_block(obj_id, obj))
+        else:
+            part_lines.append(f"# Unknown type '{obj_type}' — skipping")
+            sections.append("\n".join(part_lines))
+            continue
+
+        # Transform (rotation, scale)
+        transform = _transform_block(obj_id, obj)
+        if transform:
+            part_lines.append(transform)
+
+        # Parenting
+        parent_code = _parent_block(obj_id, parent_id)
+        if parent_code:
+            part_lines.append(parent_code)
+
+        # Material — for metaballs assign once per group
+        if mat:
+            if obj_type == "metaball":
+                group = obj.get("metaball_group", obj_id)
+                if group not in metaball_mat_assigned:
+                    metaball_mat_assigned.add(group)
+                    part_lines.append(_material_block(obj_id, mat))
+                    # Assign to the group object
+                    _, mball_obj_var = metaball_groups[group]
+                    mvar = _mat_var(obj_id)
+                    part_lines.append(
+                        f"if {mball_obj_var}.data.materials:\n"
+                        f"    {mball_obj_var}.data.materials[0] = {mvar}\n"
+                        f"else:\n"
+                        f"    {mball_obj_var}.data.materials.append({mvar})"
+                    )
+            else:
+                part_lines.append(_material_block(obj_id, mat))
+                part_lines.append(_material_assign_block(obj_id))
+
+        sections.append("\n".join(part_lines))
+
+    # --- Convert metaballs to mesh (GLB exporter ignores metaball objects) ---
+    if metaball_groups:
+        group_lines = ["\n# Convert metaball groups to mesh for GLB export"]
+        for group, (mball_data_var, mball_obj_var) in metaball_groups.items():
+            group_lines.append(
+                f"bpy.ops.object.select_all(action='DESELECT')\n"
+                f"if {mball_obj_var}.name in bpy.data.objects:\n"
+                f"    {mball_obj_var}.select_set(True)\n"
+                f"    bpy.context.view_layer.objects.active = {mball_obj_var}\n"
+                f"    bpy.ops.object.convert(target='MESH')"
+            )
+        sections.append("\n".join(group_lines))
+
+    # --- Export ---
+    sections.append(textwrap.dedent(f"""
+        # Export scene as GLB
+        bpy.ops.object.select_all(action='SELECT')
+        bpy.ops.export_scene.gltf(
+            filepath="{output_glb}",
+            export_format='GLB',
+            use_selection=False,
+            export_apply=True,
+        )
+        print("EXPORT_DONE: {output_glb}")
+    """).strip())
+
+    return "\n\n".join(sections)
+
+
+def write_script(scene_graph: dict, script_path: str, output_glb: str) -> str:
+    """Write the compiled script to disk and return the script content."""
+    script = compile_scene_graph(scene_graph, output_glb)
+    Path(script_path).write_text(script, encoding="utf-8")
+    return script

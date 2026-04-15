@@ -1,0 +1,17 @@
+[Unit]
+Description=LiteLLM thinking-stripper proxy
+After=litellm.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nugad/.claude
+ExecStart=/usr/bin/python3 -m uvicorn thinking_stripper:app --host 0.0.0.0 --port 4000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/nugad
+Environment=PATH=/home/nugad/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

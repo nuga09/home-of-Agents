@@ -1,0 +1,233 @@
+==============================================================================
+WESTCOAST MARINE PARKS — RENDER DEPLOYMENT GUIDE
+==============================================================================
+
+WHY IT ISN'T PLUG-AND-PLAY
+──────────────────────────────────────────────────────────────────────────────
+This app has three characteristics that break the defaults on every platform:
+
+  1. Socket.io (real-time WebSockets)
+  2. Prisma with a driver adapter instead of the standard schema URL
+  3. Missing or misconfigured environment variables at deploy time
+
+Each platform hit a different combination of these.
+
+
+==============================================================================
+ROOT CAUSE ANALYSIS — WHY VERCEL AND NETLIFY FAILED
+==============================================================================
+
+PROBLEM 1: Socket.io is incompatible with serverless platforms
+──────────────────────────────────────────────────────────────
+Vercel and Netlify are SERVERLESS. Every API request is a short-lived Lambda
+function that starts, handles the request, and is immediately destroyed.
+
+Your socket setup in src/pages/api/socket.ts does this:
+  anyRes.socket.server.io = io;
+  globalThis.__io = io;
+
+This works by attaching Socket.io to the underlying Node.js HTTP server — a
+server that must stay ALIVE for WebSocket connections to persist. On Vercel/
+Netlify there is no persistent server. The function dies after the request.
+WebSocket upgrades never happen. Even if they did, the connection would drop
+the moment the next function instance spins up.
+
+This is also why your realtime.ts emitQueuesUpdated() silently does nothing
+on those platforms — globalThis.__io is always undefined in serverless.
+
+PROBLEM 2: DATABASE_URL was empty on Vercel
+───────────────────────────────────────────
+Checking .vercel/.env.production.local, the production value was:
+  DATABASE_URL=""
+
+An empty string. Prisma connected to nothing, so every API call that touches
+the database would 500. This was a configuration error, not a code error —
+the env var was never set in the Vercel dashboard.
+
+PROBLEM 3: JWT_SECRET had a trailing newline on Vercel
+───────────────────────────────────────────────────────
+In .vercel/.env.production.local:
+  JWT_SECRET="46a5190...3092ce\n"
+
+The \n was literal — it became part of the secret. Tokens signed locally
+would fail verification in production because the key was different.
+
+PROBLEM 4: Netlify's serverless handler wraps next start
+─────────────────────────────────────────────────────────
+@netlify/plugin-nextjs (which is in your devDependencies) rewrites the app
+into Netlify Functions. Socket.io's server-attach pattern does not survive
+that wrapper. This is the same root cause as Problem 1, just a different
+implementation.
+
+
+==============================================================================
+WHY RENDER WORKS (AND IS THE RIGHT CHOICE)
+==============================================================================
+
+Render Web Services run a PERSISTENT Node.js process. `npm start` keeps the
+server alive. Socket.io attaches to that server on the first request to
+/api/socket and stays attached. WebSocket connections remain open. The
+globalThis.__io reference lives for the lifetime of the process.
+
+This matches exactly how the app runs locally with `npm run dev`.
+
+
+==============================================================================
+RENDER DEPLOYMENT STEPS
+==============================================================================
+
+STEP 1 — Create a Web Service on Render
+─────────────────────────────────────────
+  - Dashboard → New → Web Service
+  - Connect your GitHub repo
+  - Name: westcoast-marine-parks (or whatever you prefer)
+  - Region: Oregon (US West) — closest to your users in BC
+  - Branch: main
+
+STEP 2 — Set the build and start commands
+───────────────────────────────────────────
+  Build Command:  npm install && npm run build
+  Start Command:  npm start
+
+  The `postinstall` script already runs `prisma generate` automatically
+  during `npm install`, so you do NOT need to add it manually.
+
+STEP 3 — Set environment variables in Render Dashboard
+────────────────────────────────────────────────────────
+  Go to your service → Environment → Add Environment Variables
+
+  REQUIRED:
+  ┌─────────────────────┬──────────────────────────────────────────────────┐
+  │ Variable            │ Value                                            │
+  ├─────────────────────┼──────────────────────────────────────────────────┤
+  │ DATABASE_URL        │ Your full Neon connection string (see note below)│
+  │ JWT_SECRET          │ A random 64-char hex string (no trailing newline)│
+  │ NODE_ENV            │ production                                       │
+  │ NEXT_PUBLIC_BASE_URL│ https://your-app-name.onrender.com               │
+  └─────────────────────┴──────────────────────────────────────────────────┘
+
+  OPTIONAL (needed for password reset emails):
+  ┌─────────────────────┬──────────────────────────────────────────────────┐
+  │ SMTP_HOST           │ Your SMTP server host                            │
+  │ SMTP_PORT           │ 587                                              │
+  │ SMTP_USER           │ Your SMTP username                               │
+  │ SMTP_PASS           │ Your SMTP password                               │
+  │ SMTP_FROM           │ noreply@yourdomain.com                           │
+  └─────────────────────┴──────────────────────────────────────────────────┘
+
+  OPTIONAL (for tide data):
+  ┌─────────────────────┬──────────────────────────────────────────────────┐
+  │ WORLDTIDES_API_KEY  │ Your WorldTides API key                          │
+  └─────────────────────┴──────────────────────────────────────────────────┘
+
+DATABASE_URL NOTE:
+  Your Neon connection string is in .vercel/.env.production.local (the one
+  from the Netlify .env file, not the empty Vercel one):
+    postgresql://neondb_owner:npg_aTjiL4p6PBWF@ep-damp-morning-...neon.tech/...
+
+  Use the POOLER URL (the one with -pooler in the hostname) for production.
+  Add ?sslmode=require at the end if not already present.
+
+JWT_SECRET NOTE:
+  Generate a clean secret with no trailing characters:
+    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  Paste ONLY the hex string into Render — no quotes, no newline.
+
+STEP 4 — Set the Node version
+───────────────────────────────
+  Your package.json does not specify an engines field. Render defaults to
+  Node 18 which works. To pin it explicitly, add to package.json:
+    "engines": { "node": ">=20" }
+
+STEP 5 — Deploy
+────────────────
+  Click "Create Web Service". Render will:
+    1. Clone the repo
+    2. Run npm install (this runs prisma generate via postinstall)
+    3. Run npm run build (next build)
+    4. Run npm start (next start — persistent server)
+
+STEP 6 — Run the database migration
+─────────────────────────────────────
+  After the first deploy, open Render Shell or run locally with the
+  production DATABASE_URL:
+    npx prisma migrate deploy
+
+  Do NOT use `prisma migrate dev` in production. Use `migrate deploy`.
+
+STEP 7 — Seed the database (optional)
+───────────────────────────────────────
+  If you want the dev seed data (admin + customer accounts):
+    npm run db:seed
+  Run this from the Render Shell or locally pointing at the production DB.
+
+
+==============================================================================
+KNOWN ISSUES IN THE CODEBASE (not blocking but worth fixing)
+==============================================================================
+
+1. MIDDLEWARE DEPRECATION WARNING
+   File: src/middleware.ts
+   Next.js 16 renamed the middleware convention to "proxy". The build warns:
+     "The middleware file convention is deprecated. Please use proxy instead."
+   The file still works now but will break in a future Next.js version.
+   Fix: rename src/middleware.ts → src/proxy.ts (and update the export name).
+
+2. PRISMA SCHEMA MISSING url IN DATASOURCE
+   File: prisma/schema.prisma
+   The datasource block has no url field:
+     datasource db {
+       provider = "postgresql"
+     }
+   This relies on prisma.config.ts (Prisma 7's new config API) to inject the
+   URL. The runtime db.ts bypasses this entirely by passing DATABASE_URL
+   directly to PrismaPg adapter. This works but is unconventional and will
+   confuse anyone debugging Prisma CLI commands (migrate, studio, etc.) if
+   DATABASE_URL is not set in their shell.
+
+3. DUPLICATE DB CLIENT FILE
+   Files: src/lib/db.ts and src/lib/db1.ts
+   db1.ts imports `dotenv/config` which is not in package.json. If db1.ts
+   is ever imported it will throw a module not found error at runtime.
+   db1.ts appears to be an old draft — delete it.
+
+4. IN-MEMORY RATE LIMITER
+   File: src/lib/rate-limit.ts
+   The rate limiter uses a Map stored in process memory. It resets on every
+   Render deploy or restart, and if you ever scale to 2+ instances the
+   counts will not be shared between them. This is noted in the source code.
+   Acceptable for a single-instance deploy; replace with Redis (Upstash) if
+   you scale horizontally.
+
+5. @netlify/plugin-nextjs IN devDependencies
+   This is installed on every build including Render's. It adds build time
+   and is completely unused on Render. Remove it:
+     npm uninstall @netlify/plugin-nextjs
+   Also delete netlify.toml.
+
+
+==============================================================================
+SUMMARY OF CHANGES NEEDED BEFORE DEPLOYING TO RENDER
+==============================================================================
+
+  [ ] Set DATABASE_URL in Render environment variables (non-empty, pooler URL)
+  [ ] Set JWT_SECRET in Render environment variables (clean hex, no newline)
+  [ ] Set NODE_ENV=production
+  [ ] Set NEXT_PUBLIC_BASE_URL to your Render domain
+  [ ] Run prisma migrate deploy after first deploy
+  [ ] (Optional) Remove db1.ts
+  [ ] (Optional) Remove @netlify/plugin-nextjs and netlify.toml
+
+
+==============================================================================
+RENDER SERVICE HEALTH CHECK
+==============================================================================
+
+Render pings your service to verify it's up. Next.js does not expose /health
+by default. Render will use / (the homepage) for health checks which is fine.
+If you want a dedicated endpoint, add:
+  src/app/api/health/route.ts
+  export async function GET() { return Response.json({ status: "ok" }) }
+And set the health check path to /api/health in the Render dashboard.
+
+==============================================================================

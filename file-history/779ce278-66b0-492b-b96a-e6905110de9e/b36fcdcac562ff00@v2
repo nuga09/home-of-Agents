@@ -1,0 +1,212 @@
+"""
+agent.py — Claude-powered scene graph generation agent.
+
+Supports:
+  - Text-to-scene: generate a full scene graph from a description.
+  - Image-to-scene: analyse an uploaded image then generate the scene.
+  - Multi-turn refinement: apply incremental changes on top of an existing scene graph.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import uuid
+from pathlib import Path
+from typing import Any
+
+import anthropic
+
+from part_library import SCENE_GRAPH_SCHEMA, get_template_context
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = f"""You are BlenderAgent, an expert 3D scene designer that outputs structured scene graph JSON.
+
+## Your job
+Given a user description (text and/or image), produce a complete, valid scene graph JSON that will be
+compiled into a Blender Python script. The scene must be built from atomic geometric parts assembled
+together — this is called emergent, part-based composition.
+
+## Core rules
+1. ALWAYS output valid JSON inside a ```json … ``` code fence. No other text outside the fence.
+2. Every object needs a unique snake_case `id`.
+3. Use real-world proportions (metres). A human is ~1.7 m tall, a bicycle ~1.8 m long.
+4. For organic shapes (humans, animals, creatures) use `"type": "metaball"` parts all sharing the
+   same `"metaball_group"` string. Blender merges them seamlessly.
+5. For female human figures use these proportions:
+   - Hip width > shoulder width (ratio ~1.15)
+   - Narrower waist (abdomen radius ≈ 0.68 × pelvis radius)
+   - Fuller thighs (thigh radius ≈ ribcage radius)
+   - Softer curves overall (lower stiffness 0.8–1.0)
+6. Camera should frame the scene nicely. Default: location [3, -4, 2.5], look_at scene centre.
+7. Provide plausible materials with `base_color` [R,G,B,A], `roughness`, `metallic`.
+8. Positions use Z-up (Blender convention). Ground plane is Z=0.
+9. When refining, return the COMPLETE updated scene graph, not just the changed parts.
+
+## Schema
+{SCENE_GRAPH_SCHEMA}
+
+{get_template_context()}
+
+## Output format (strictly)
+```json
+{{ … full scene graph … }}
+```
+"""
+
+
+# ---------------------------------------------------------------------------
+# Session store (in-memory; swap for Redis/DB in production)
+# ---------------------------------------------------------------------------
+
+_sessions: dict[str, dict] = {}
+
+
+def _new_session() -> str:
+    sid = str(uuid.uuid4())
+    _sessions[sid] = {
+        "history": [],          # list of {"role": ..., "content": ...}
+        "scene_graph": None,    # latest parsed scene graph
+    }
+    return sid
+
+
+def get_session(session_id: str | None) -> tuple[str, dict]:
+    """Return (session_id, session_data), creating a new session if needed."""
+    if session_id and session_id in _sessions:
+        return session_id, _sessions[session_id]
+    sid = _new_session()
+    return sid, _sessions[sid]
+
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
+
+def _encode_image(image_path: str) -> dict:
+    """Return an Anthropic image content block from a local file path."""
+    data = Path(image_path).read_bytes()
+    b64 = base64.standard_b64encode(data).decode("utf-8")
+    suffix = Path(image_path).suffix.lower()
+    media_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
+    media_type = media_map.get(suffix, "image/png")
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": b64},
+    }
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction
+# ---------------------------------------------------------------------------
+
+_JSON_RE = re.compile(r"```json\s*([\s\S]+?)\s*```", re.IGNORECASE)
+
+
+def _extract_json(text: str) -> dict:
+    m = _JSON_RE.search(text)
+    if m:
+        raw = m.group(1)
+    else:
+        # Fallback: try raw text
+        raw = text.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Claude returned invalid JSON: {exc}\n\nRaw:\n{raw[:500]}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Main agent call
+# ---------------------------------------------------------------------------
+
+def generate_scene(
+    prompt: str,
+    session_id: str | None = None,
+    image_paths: list[str] | None = None,
+    glb_paths: list[str] | None = None,
+) -> dict:
+    """
+    Generate or refine a scene graph.
+
+    Args:
+        prompt:      Natural language instruction.
+        session_id:  Existing session for multi-turn refinement; None to start fresh.
+        image_paths: Local paths to uploaded images (for vision analysis).
+        glb_paths:   Local paths to uploaded GLB assets (referenced in the scene graph).
+
+    Returns:
+        {
+            "session_id": str,
+            "scene_graph": dict,
+            "raw_response": str,
+        }
+    """
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    sid, session = get_session(session_id)
+
+    # Build the user content block
+    content: list[dict] = []
+
+    # Attach images for vision
+    if image_paths:
+        for img_path in image_paths:
+            if Path(img_path).exists():
+                content.append(_encode_image(img_path))
+                content.append({
+                    "type": "text",
+                    "text": f"[Uploaded image: {Path(img_path).name}]",
+                })
+
+    # Mention GLB assets so Claude can reference their paths in the scene graph
+    if glb_paths:
+        glb_note = "Uploaded GLB assets (use these filepaths in imported_glb objects):\n"
+        glb_note += "\n".join(f"  - {p}" for p in glb_paths)
+        content.append({"type": "text", "text": glb_note})
+
+    # Include current scene graph for refinement
+    if session["scene_graph"]:
+        current_json = json.dumps(session["scene_graph"], indent=2)
+        content.append({
+            "type": "text",
+            "text": (
+                f"Current scene graph (modify this according to the instruction):\n"
+                f"```json\n{current_json}\n```\n\n"
+                f"Instruction: {prompt}"
+            ),
+        })
+    else:
+        content.append({"type": "text", "text": prompt})
+
+    # Append to conversation history
+    session["history"].append({"role": "user", "content": content})
+
+    # Call Claude
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=8192,
+        system=SYSTEM_PROMPT,
+        messages=session["history"],
+    )
+
+    assistant_text: str = response.content[0].text
+    session["history"].append({"role": "assistant", "content": assistant_text})
+
+    # Parse scene graph
+    scene_graph = _extract_json(assistant_text)
+    # Stamp a scene_id if missing
+    if "scene_id" not in scene_graph:
+        scene_graph["scene_id"] = str(uuid.uuid4())
+    session["scene_graph"] = scene_graph
+
+    return {
+        "session_id": sid,
+        "scene_graph": scene_graph,
+        "raw_response": assistant_text,
+    }

@@ -1,0 +1,92 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import crypto from "crypto";
+import { db } from "@/lib/db";
+import { rateLimit, requestIp } from "@/lib/rate-limit";
+
+export const runtime = "nodejs";
+
+const Schema = z.object({
+  method: z.enum(["email", "phone"]),
+  value: z.string().min(1),
+});
+
+async function sendResetSMS(phone: string, link: string) {
+  const sid   = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from  = process.env.TWILIO_FROM;
+  if (!sid || !token || !from) {
+    console.log("[DEV] SMS reset link for", phone, "→", link);
+    return;
+  }
+  const twilio = (await import("twilio")).default;
+  const client = twilio(sid, token);
+  await client.messages.create({
+    to: phone,
+    from,
+    body: `West Coast Marine password reset: ${link}`,
+  });
+}
+
+async function sendResetEmail(email: string, link: string) {
+  const host = process.env.SMTP_HOST;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  if (!host || !user || !pass) {
+    console.log("[DEV] Email reset link for", email, "→", link);
+    return;
+  }
+  const nodemailer = (await import("nodemailer")).default;
+  const transport = nodemailer.createTransport({ host, port: 587, auth: { user, pass } });
+  await transport.sendMail({
+    from: `"West Coast Marine" <${user}>`,
+    to: email,
+    subject: "Reset your password",
+    text: `Click to reset your West Coast Marine password:\n\n${link}\n\nLink expires in 1 hour.`,
+    html: `<p>Click to reset your West Coast Marine password:</p><p><a href="${link}">${link}</a></p><p>Link expires in 1 hour.</p>`,
+  });
+}
+
+export async function POST(req: Request) {
+  // Rate limit: 5 attempts per hour per IP
+  const ip = requestIp(req);
+  const rl = rateLimit(`forgot-pw:${ip}`, 5, 60 * 60 * 1000);
+  if (!rl.allowed) {
+    return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429 });
+  }
+
+  const body   = await req.json().catch(() => null);
+  const parsed = Schema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+
+  const { method, value } = parsed.data;
+  const normalised = value.trim().toLowerCase();
+
+  let user: { id: string; email: string; phone: string | null } | null = null;
+  if (method === "email") {
+    user = await db.user.findUnique({ where: { email: normalised }, select: { id: true, email: true, phone: true } });
+  } else {
+    user = await db.user.findFirst({ where: { phone: value.trim() }, select: { id: true, email: true, phone: true } });
+  }
+
+  // Always return 200 so we don't leak whether the account exists
+  if (!user) return NextResponse.json({ ok: true });
+
+  // Invalidate old tokens for this user
+  await db.passwordReset.updateMany({ where: { userId: user.id, used: false }, data: { used: true } });
+
+  const token     = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  await db.passwordReset.create({ data: { userId: user.id, token, method, expiresAt } });
+
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "https://splendorous-pony-31739a.netlify.app";
+  const link    = `${baseUrl}/reset-password?token=${token}`;
+
+  if (method === "email") {
+    await sendResetEmail(user.email, link);
+  } else {
+    await sendResetSMS(user.phone ?? value.trim(), link);
+  }
+
+  return NextResponse.json({ ok: true });
+}

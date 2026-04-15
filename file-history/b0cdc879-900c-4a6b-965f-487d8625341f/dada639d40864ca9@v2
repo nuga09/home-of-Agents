@@ -1,0 +1,132 @@
+-- CreateEnum
+CREATE TYPE "Role" AS ENUM ('CUSTOMER', 'ADMIN');
+
+-- CreateEnum
+CREATE TYPE "BookingType" AS ENUM ('LAUNCH', 'RETRIEVAL');
+
+-- CreateEnum
+CREATE TYPE "BookingStatus" AS ENUM ('PENDING', 'COMPLETED', 'CANCELLED');
+
+-- CreateTable
+CREATE TABLE "User" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "username" TEXT,
+    "email" TEXT NOT NULL,
+    "phone" TEXT,
+    "address" TEXT,
+    "passwordHash" TEXT NOT NULL,
+    "role" "Role" NOT NULL DEFAULT 'CUSTOMER',
+    "suspendedUntil" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Vessel" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "boatName" TEXT NOT NULL,
+    "boatType" TEXT,
+    "boatNumber" TEXT NOT NULL,
+    "yardNumber" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Vessel_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Booking" (
+    "id" TEXT NOT NULL,
+    "vesselId" TEXT NOT NULL,
+    "type" "BookingType" NOT NULL,
+    "serviceDate" TIMESTAMP(3) NOT NULL,
+    "requestedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "status" "BookingStatus" NOT NULL DEFAULT 'PENDING',
+    "completedAt" TIMESTAMP(3),
+    "stayingOnMooring" BOOLEAN NOT NULL DEFAULT false,
+    "note" TEXT,
+    "createdByUserId" TEXT,
+
+    CONSTRAINT "Booking_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "PasswordReset" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "token" TEXT NOT NULL,
+    "method" TEXT NOT NULL,
+    "used" BOOLEAN NOT NULL DEFAULT false,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "PasswordReset_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "DailyMessage" (
+    "id" TEXT NOT NULL,
+    "serviceDate" TIMESTAMP(3) NOT NULL,
+    "message" TEXT NOT NULL,
+    "launchStartTime" TEXT,
+    "retrievalStartTime" TEXT,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedByUserId" TEXT,
+
+    CONSTRAINT "DailyMessage_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Vessel_yardNumber_key" ON "Vessel"("yardNumber");
+
+-- CreateIndex
+CREATE INDEX "Vessel_userId_idx" ON "Vessel"("userId");
+
+-- CreateIndex
+CREATE INDEX "Vessel_yardNumber_idx" ON "Vessel"("yardNumber");
+
+-- CreateIndex
+CREATE INDEX "Booking_type_serviceDate_status_requestedAt_idx" ON "Booking"("type", "serviceDate", "status", "requestedAt");
+
+-- CreateIndex
+CREATE INDEX "Booking_vesselId_type_serviceDate_idx" ON "Booking"("vesselId", "type", "serviceDate");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PasswordReset_token_key" ON "PasswordReset"("token");
+
+-- CreateIndex
+CREATE INDEX "PasswordReset_token_idx" ON "PasswordReset"("token");
+
+-- CreateIndex
+CREATE INDEX "PasswordReset_userId_idx" ON "PasswordReset"("userId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "DailyMessage_serviceDate_key" ON "DailyMessage"("serviceDate");
+
+-- CreateIndex
+CREATE INDEX "DailyMessage_serviceDate_idx" ON "DailyMessage"("serviceDate");
+
+-- AddForeignKey
+ALTER TABLE "Vessel" ADD CONSTRAINT "Vessel_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Booking" ADD CONSTRAINT "Booking_vesselId_fkey" FOREIGN KEY ("vesselId") REFERENCES "Vessel"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Booking" ADD CONSTRAINT "Booking_createdByUserId_fkey" FOREIGN KEY ("createdByUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "PasswordReset" ADD CONSTRAINT "PasswordReset_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "DailyMessage" ADD CONSTRAINT "DailyMessage_updatedByUserId_fkey" FOREIGN KEY ("updatedByUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;

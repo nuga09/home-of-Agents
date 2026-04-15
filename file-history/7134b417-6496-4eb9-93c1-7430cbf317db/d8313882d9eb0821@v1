@@ -1,0 +1,112 @@
+#!/bin/bash
+SETTINGS="/mnt/c/Users/nugad/.claude/settings.json"
+LITELLM_CONFIG="$HOME/.claude/litellm_config.yaml"
+LITELLM_PID_FILE="/tmp/litellm.pid"
+
+GREEN='\033[92m'; CYAN='\033[96m'; YELLOW='\033[93m'
+RED='\033[91m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+
+current_mode() {
+  grep -q "ANTHROPIC_BASE_URL" "$SETTINGS" 2>/dev/null && echo "local" || echo "cloud"
+}
+
+litellm_running() { curl -s http://localhost:4000/health > /dev/null 2>&1; }
+ollama_running()  { curl -s http://localhost:11434 > /dev/null 2>&1; }
+
+switch_local() {
+  echo -e "\n${CYAN}${BOLD}Switching to local models...${RESET}\n"
+
+  if ! ollama_running; then
+    echo -e "  ${YELLOW}Starting Ollama...${RESET}"
+    ollama serve > /tmp/ollama.log 2>&1 &
+    sleep 2
+    ollama_running || { echo -e "  ${RED}✗ Ollama failed — is it installed?${RESET}\n  https://ollama.com"; exit 1; }
+    echo -e "  ${GREEN}✓ Ollama started${RESET}"
+  else
+    echo -e "  ${GREEN}✓ Ollama running${RESET}"
+  fi
+
+  if [ ! -f "$LITELLM_CONFIG" ]; then
+    mkdir -p "$HOME/.claude"
+    cat > "$LITELLM_CONFIG" << 'YAML'
+model_list:
+  - model_name: deepseek-coder-6.7b
+    litellm_params:
+      model: ollama/deepseek-coder:6.7b
+      api_base: http://localhost:11434
+  - model_name: deepseek-r1-14b
+    litellm_params:
+      model: ollama/deepseek-r1:14b
+      api_base: http://localhost:11434
+  - model_name: deepseek-coder-33b
+    litellm_params:
+      model: ollama/deepseek-coder:33b
+      api_base: http://localhost:11434
+litellm_settings:
+  master_key: sentinel-local
+YAML
+    echo -e "  ${GREEN}✓ LiteLLM config created${RESET}"
+  fi
+
+  if ! litellm_running; then
+    echo -e "  ${YELLOW}Starting LiteLLM...${RESET}"
+    nohup litellm --config "$LITELLM_CONFIG" --port 4000 > /tmp/litellm.log 2>&1 &
+    echo $! > "$LITELLM_PID_FILE"
+    sleep 3
+    litellm_running || { echo -e "  ${RED}✗ LiteLLM failed — check: cat /tmp/litellm.log${RESET}"; exit 1; }
+    echo -e "  ${GREEN}✓ LiteLLM started on :4000${RESET}"
+  else
+    echo -e "  ${GREEN}✓ LiteLLM running${RESET}"
+  fi
+
+  cat > "$SETTINGS" << 'EOF'
+{
+  "autoUpdatesChannel": "latest",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_AUTH_TOKEN": "sentinel-local"
+  }
+}
+EOF
+
+  echo -e "\n  ${GREEN}${BOLD}✓ LOCAL mode active${RESET}"
+  echo -e "  ${DIM}claude --model deepseek-coder-6.7b${RESET}"
+  echo -e "  ${DIM}claude --model deepseek-r1-14b${RESET}\n"
+}
+
+switch_cloud() {
+  echo -e "\n${CYAN}${BOLD}Switching to Anthropic cloud...${RESET}\n"
+  if litellm_running; then
+    [ -f "$LITELLM_PID_FILE" ] && kill "$(cat $LITELLM_PID_FILE)" 2>/dev/null || pkill -f litellm 2>/dev/null
+    rm -f "$LITELLM_PID_FILE"
+    echo -e "  ${GREEN}✓ LiteLLM stopped${RESET}"
+  fi
+  cat > "$SETTINGS" << 'EOF'
+{
+  "autoUpdatesChannel": "latest"
+}
+EOF
+  echo -e "\n  ${GREEN}${BOLD}✓ CLOUD mode active${RESET}"
+  echo -e "  ${DIM}Claude Code → api.anthropic.com${RESET}\n"
+}
+
+show_status() {
+  echo -e "\n${BOLD}Status${RESET}"
+  mode=$(current_mode)
+  [ "$mode" = "local" ] && echo -e "  Mode      ${GREEN}${BOLD}LOCAL${RESET}" || echo -e "  Mode      ${CYAN}${BOLD}CLOUD${RESET}"
+  ollama_running  && echo -e "  Ollama    ${GREEN}running :11434${RESET}" || echo -e "  Ollama    ${DIM}stopped${RESET}"
+  litellm_running && echo -e "  LiteLLM   ${GREEN}running :4000${RESET}"  || echo -e "  LiteLLM   ${DIM}stopped${RESET}"
+  echo ""
+}
+
+case "${1:-}" in
+  local)  switch_local ;;
+  cloud)  switch_cloud ;;
+  status) show_status ;;
+  *)
+    echo -e "\n${BOLD}Usage:${RESET}"
+    echo -e "  ${CYAN}claude-local${RESET}   switch to local models"
+    echo -e "  ${CYAN}claude-cloud${RESET}   switch to Anthropic cloud"
+    echo -e "  ${CYAN}claude-status${RESET}  show current mode\n"
+    show_status ;;
+esac

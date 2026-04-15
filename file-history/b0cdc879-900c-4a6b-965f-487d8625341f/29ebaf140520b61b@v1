@@ -1,0 +1,67 @@
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+import { execSync } from "child_process";
+
+declare global {
+  var globalForPrisma: { prisma?: PrismaClient; syncDone?: boolean };
+}
+
+// Suppress pg's SSL-mode deprecation warning (sslmode=require is fine for Neon;
+// the warning fires because pg v8 aliases 'require' → 'verify-full', which is correct behaviour).
+process.on("warning", (w) => {
+  if (w.message.includes("SSL modes")) return;
+  console.warn(w);
+});
+
+/**
+ * Sync Prisma schema to database on first initialization.
+ * This ensures tables exist before any queries are attempted.
+ */
+async function syncSchemaIfNeeded() {
+  if (globalThis.globalForPrisma?.syncDone) {
+    return; // Already synced in this process
+  }
+
+  if (!process.env.DATABASE_URL) {
+    console.error("❌ DATABASE_URL not set. Schema sync skipped.");
+    globalThis.globalForPrisma = globalThis.globalForPrisma || {};
+    globalThis.globalForPrisma.syncDone = true;
+    return;
+  }
+
+  try {
+    console.log("🔄 Syncing database schema on startup...");
+    execSync("npx prisma db push --skip-generate --accept-data-loss", {
+      stdio: "pipe",
+      env: { ...process.env, PRISMA_SKIP_ENGINE_CHECK: "1" },
+    });
+    console.log("✅ Schema sync completed");
+  } catch (error: any) {
+    console.error("⚠️  Schema sync warning:", error.message);
+    // Don't fail startup; let queries fail if tables are actually missing
+  }
+
+  globalThis.globalForPrisma = globalThis.globalForPrisma || {};
+  globalThis.globalForPrisma.syncDone = true;
+}
+
+// Create a Postgres pool for the adapter
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+export const db =
+  globalThis.globalForPrisma?.prisma ??
+  new PrismaClient({
+    adapter: new PrismaPg(pool),
+    log: process.env.NODE_ENV === "development" ? [] : [],
+  });
+
+// Sync schema on first db import in production
+if (process.env.NODE_ENV === "production" && !globalThis.globalForPrisma?.syncDone) {
+  syncSchemaIfNeeded().catch((err) => {
+    console.error("Fatal error during schema sync:", err);
+  });
+}
+
+// Prevent multiple instances in dev
+if (process.env.NODE_ENV !== "production") globalThis.globalForPrisma = { prisma: db };

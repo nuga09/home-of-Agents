@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(ls /home/nugad/.claude/agents/*.md)",
+      "Bash(xargs -I{} sh -c 'grep -q \"## AGENT DNA\" \"{}\" && echo \"DONE: {}\" || echo \"TODO: {}\"')",
+      "Bash(xargs -I{} sh -c 'grep -q \"## AGENT DNA\" \"{}\" && echo \"DONE\" || echo \"TODO\"')",
+      "Bash(xargs -I{} sh -c 'grep -q \"## AGENT DNA\" \"{}\" || echo \"{}\"')"
+    ],
+    "defaultMode": "bypassPermissions"
+  }
+}

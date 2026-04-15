@@ -1,0 +1,255 @@
+"""
+main.py — FastAPI backend for the Blender AI Agent.
+
+Endpoints:
+  POST /api/generate          — text prompt → scene graph + Blender script
+  POST /api/refine            — multi-turn refinement of an existing scene
+  POST /api/render            — compile scene graph and run Blender headlessly → GLB
+  POST /api/upload-image      — upload an image for vision analysis
+  POST /api/upload-glb        — upload a GLB asset to embed in scenes
+  GET  /api/scene/{scene_id}  — fetch an existing scene graph
+  GET  /api/download/{filename} — download a generated GLB
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+
+import aiofiles
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+import agent as agent_module
+import compiler
+
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Blender AI Agent", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+BASE_DIR = Path(__file__).parent
+UPLOADS_DIR = BASE_DIR / "uploads"
+OUTPUTS_DIR = BASE_DIR / "outputs"
+UPLOADS_DIR.mkdir(exist_ok=True)
+OUTPUTS_DIR.mkdir(exist_ok=True)
+
+BLENDER_BIN = shutil.which("blender") or "/snap/bin/blender"
+
+# In-memory scene graph store (scene_id → scene_graph dict)
+_scene_store: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# Request / response models
+# ---------------------------------------------------------------------------
+
+class GenerateRequest(BaseModel):
+    prompt: str
+    session_id: str | None = None
+
+
+class RefineRequest(BaseModel):
+    prompt: str
+    session_id: str
+
+
+class RenderRequest(BaseModel):
+    scene_id: str
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def _save_upload(upload: UploadFile, dest_dir: Path) -> str:
+    ext = Path(upload.filename).suffix if upload.filename else ""
+    filename = f"{uuid.uuid4()}{ext}"
+    dest = dest_dir / filename
+    async with aiofiles.open(dest, "wb") as f:
+        content = await upload.read()
+        await f.write(content)
+    return str(dest)
+
+
+async def _run_blender(script_path: str) -> tuple[int, str, str]:
+    """Run Blender headlessly and return (returncode, stdout, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        BLENDER_BIN,
+        "--background",
+        "--python", script_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "blender": BLENDER_BIN}
+
+
+@app.post("/api/generate")
+async def generate(req: GenerateRequest):
+    """Generate a scene graph from a text prompt (no images)."""
+    if not req.prompt.strip():
+        raise HTTPException(400, "prompt is required")
+
+    result = agent_module.generate_scene(
+        prompt=req.prompt,
+        session_id=req.session_id,
+    )
+    scene_graph = result["scene_graph"]
+    _scene_store[scene_graph["scene_id"]] = scene_graph
+
+    return {
+        "session_id": result["session_id"],
+        "scene_id": scene_graph["scene_id"],
+        "scene_graph": scene_graph,
+    }
+
+
+@app.post("/api/generate-with-media")
+async def generate_with_media(
+    prompt: str = Form(...),
+    session_id: str | None = Form(None),
+    images: list[UploadFile] = File(default=[]),
+    glbs: list[UploadFile] = File(default=[]),
+):
+    """Generate a scene from a prompt plus optional image/GLB uploads."""
+    image_paths: list[str] = []
+    glb_paths: list[str] = []
+
+    for img in images:
+        if img.filename:
+            path = await _save_upload(img, UPLOADS_DIR)
+            image_paths.append(path)
+
+    for glb in glbs:
+        if glb.filename:
+            path = await _save_upload(glb, UPLOADS_DIR)
+            glb_paths.append(path)
+
+    result = agent_module.generate_scene(
+        prompt=prompt,
+        session_id=session_id,
+        image_paths=image_paths or None,
+        glb_paths=glb_paths or None,
+    )
+    scene_graph = result["scene_graph"]
+    _scene_store[scene_graph["scene_id"]] = scene_graph
+
+    return {
+        "session_id": result["session_id"],
+        "scene_id": scene_graph["scene_id"],
+        "scene_graph": scene_graph,
+        "uploaded_images": image_paths,
+        "uploaded_glbs": glb_paths,
+    }
+
+
+@app.post("/api/refine")
+async def refine(req: RefineRequest):
+    """Apply a natural-language refinement to the current session's scene."""
+    result = agent_module.generate_scene(
+        prompt=req.prompt,
+        session_id=req.session_id,
+    )
+    scene_graph = result["scene_graph"]
+    _scene_store[scene_graph["scene_id"]] = scene_graph
+
+    return {
+        "session_id": result["session_id"],
+        "scene_id": scene_graph["scene_id"],
+        "scene_graph": scene_graph,
+    }
+
+
+@app.post("/api/render")
+async def render(req: RenderRequest):
+    """
+    Compile the stored scene graph into a Blender script and run it headlessly.
+    Returns the path to the generated GLB file.
+    """
+    scene_graph = _scene_store.get(req.scene_id)
+    if not scene_graph:
+        raise HTTPException(404, f"scene_id '{req.scene_id}' not found")
+
+    scene_id = req.scene_id
+    script_path = str(OUTPUTS_DIR / f"{scene_id}.py")
+    glb_path = str(OUTPUTS_DIR / f"{scene_id}.glb")
+
+    compiler.write_script(scene_graph, script_path, glb_path)
+
+    returncode, stdout, stderr = await _run_blender(script_path)
+
+    if returncode != 0 or not Path(glb_path).exists():
+        # Return the Blender error for debugging
+        raise HTTPException(500, {
+            "error": "Blender render failed",
+            "returncode": returncode,
+            "stdout": stdout[-3000:],
+            "stderr": stderr[-3000:],
+        })
+
+    return {
+        "scene_id": scene_id,
+        "glb_url": f"/api/download/{scene_id}.glb",
+        "script_url": f"/api/download/{scene_id}.py",
+        "stdout": stdout[-2000:],
+    }
+
+
+@app.get("/api/scene/{scene_id}")
+async def get_scene(scene_id: str):
+    scene_graph = _scene_store.get(scene_id)
+    if not scene_graph:
+        raise HTTPException(404, "Scene not found")
+    return scene_graph
+
+
+@app.get("/api/download/{filename}")
+async def download(filename: str):
+    # Sanitise filename — no path traversal
+    safe = Path(filename).name
+    path = OUTPUTS_DIR / safe
+    if not path.exists():
+        raise HTTPException(404, "File not found")
+    media = "model/gltf-binary" if safe.endswith(".glb") else "text/plain"
+    return FileResponse(str(path), media_type=media, filename=safe)
+
+
+@app.post("/api/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+    path = await _save_upload(file, UPLOADS_DIR)
+    return {"path": path, "filename": Path(path).name}
+
+
+@app.post("/api/upload-glb")
+async def upload_glb(file: UploadFile = File(...)):
+    path = await _save_upload(file, UPLOADS_DIR)
+    return {"path": path, "filename": Path(path).name}

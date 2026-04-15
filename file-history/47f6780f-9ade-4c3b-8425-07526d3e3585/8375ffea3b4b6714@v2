@@ -1,0 +1,160 @@
+#!/bin/bash
+# ============================================================
+#  Sentinel AI Suite — Build Script
+#  Run once before first launch, or after pulling updates.
+#  Usage: bash build.sh [--skip-rust] [--skip-node] [--skip-python]
+# ============================================================
+
+set -euo pipefail
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'
+R='\033[0;31m'; B='\033[1m'; X='\033[0m'
+
+log()     { echo -e "${C}[build]${X} $*"; }
+ok()      { echo -e "${G}✔${X}  $*"; }
+warn()    { echo -e "${Y}⚠${X}  $*"; }
+fail()    { echo -e "${R}✘${X}  $*"; exit 1; }
+section() { echo ""; echo -e "${B}${C}── $* ──────────────────────────────────────${X}"; }
+
+SKIP_RUST=false
+SKIP_NODE=false
+SKIP_PYTHON=false
+for arg in "$@"; do
+  case $arg in
+    --skip-rust)   SKIP_RUST=true ;;
+    --skip-node)   SKIP_NODE=true ;;
+    --skip-python) SKIP_PYTHON=true ;;
+  esac
+done
+
+echo ""
+echo -e "${B}${C}╔══════════════════════════════════════════════╗${X}"
+echo -e "${B}${C}║     Sentinel AI Suite — Build               ║${X}"
+echo -e "${B}${C}╚══════════════════════════════════════════════╝${X}"
+
+# ── 1. clawd-code (Rust) ─────────────────────────────────────
+section "clawd-code (Rust binary)"
+if $SKIP_RUST; then
+  warn "Skipping Rust build (--skip-rust)"
+else
+  RUST_DIR="$BASE/clawd-code/rust"
+  if [[ ! -f "$RUST_DIR/Cargo.toml" ]]; then
+    warn "clawd-code/rust/Cargo.toml not found — skipping"
+  else
+    if ! command -v cargo &>/dev/null; then
+      fail "cargo not found. Install Rust: https://rustup.rs"
+    fi
+    log "Building clawd (release)... this may take a few minutes on first run."
+    cd "$RUST_DIR"
+    cargo build --release 2>&1 | grep -E "^(error|warning\[|Compiling|Finished|error\[)" || true
+    BINARY="$RUST_DIR/target/release/claw"
+    if [[ -f "$BINARY" ]]; then
+      # Symlink into sentinel_files so it's on a predictable path
+      ln -sf "$BINARY" "$BASE/claw"
+      ok "clawd built → $BASE/claw"
+    else
+      fail "Build succeeded but binary not found at $BINARY"
+    fi
+  fi
+fi
+
+# ── 2. MiroFish frontend (Node.js) ───────────────────────────
+section "MiroFish frontend (npm install)"
+if $SKIP_NODE; then
+  warn "Skipping Node builds (--skip-node)"
+else
+  FRONTEND_DIR="$BASE/MiroFish/frontend"
+  if [[ -f "$FRONTEND_DIR/package.json" ]]; then
+    if ! command -v npm &>/dev/null; then
+      warn "npm not found — skipping MiroFish frontend"
+    else
+      log "npm install in MiroFish/frontend..."
+      cd "$FRONTEND_DIR"
+      npm install --silent
+      ok "MiroFish frontend node_modules ready"
+    fi
+  else
+    warn "MiroFish/frontend/package.json not found — skipping"
+  fi
+
+  # promptfoo
+  PROMPTFOO_DIR="$BASE/promptfoo"
+  if [[ -f "$PROMPTFOO_DIR/package.json" ]]; then
+    if command -v npm &>/dev/null; then
+      log "npm install in promptfoo..."
+      cd "$PROMPTFOO_DIR"
+      npm install --silent
+      ok "promptfoo node_modules ready"
+    fi
+  fi
+fi
+
+# ── 3. Python venvs ──────────────────────────────────────────
+section "Python venvs"
+if $SKIP_PYTHON; then
+  warn "Skipping Python venvs (--skip-python)"
+else
+  if ! command -v python3 &>/dev/null; then
+    fail "python3 not found"
+  fi
+
+  # MiroFish backend
+  MIRO_BACKEND="$BASE/MiroFish/backend"
+  if [[ -f "$MIRO_BACKEND/requirements.txt" ]]; then
+    if [[ ! -d "$MIRO_BACKEND/venv" ]]; then
+      log "Creating MiroFish backend venv..."
+      python3 -m venv "$MIRO_BACKEND/venv"
+    fi
+    log "Installing MiroFish backend deps..."
+    "$MIRO_BACKEND/venv/bin/pip" install -q -r "$MIRO_BACKEND/requirements.txt"
+    ok "MiroFish backend venv ready"
+  else
+    warn "MiroFish/backend/requirements.txt not found — skipping"
+  fi
+
+  # Sentinel Agent
+  AGENT_DIR="$BASE/claude_agent"
+  if [[ -f "$AGENT_DIR/requirements.txt" ]]; then
+    if [[ ! -d "$AGENT_DIR/venv" ]]; then
+      log "Creating Sentinel Agent venv..."
+      python3 -m venv "$AGENT_DIR/venv"
+    fi
+    log "Installing Sentinel Agent deps..."
+    "$AGENT_DIR/venv/bin/pip" install -q -r "$AGENT_DIR/requirements.txt"
+    ok "Sentinel Agent venv ready"
+  fi
+fi
+
+# ── 4. Verify claude CLI ─────────────────────────────────────
+section "claude CLI"
+if command -v claude &>/dev/null; then
+  CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+  ok "claude CLI found: $CLAUDE_VERSION"
+else
+  warn "claude CLI not found — Sentinel Agent (port 8080) will not work"
+  warn "Install: npm install -g @anthropic-ai/claude-code"
+fi
+
+# ── 5. Verify local AI stack ─────────────────────────────────
+section "Local AI stack"
+if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  ok "Ollama running on :11434"
+else
+  warn "Ollama not running — start it before launching sentinel"
+fi
+
+if curl -sf http://localhost:4001/health >/dev/null 2>&1; then
+  ok "LiteLLM running on :4001"
+else
+  warn "LiteLLM not running — will be started by start_sentinel.sh"
+fi
+
+# ── Done ─────────────────────────────────────────────────────
+echo ""
+echo -e "${B}${G}╔══════════════════════════════════════════════╗${X}"
+echo -e "${B}${G}║        Build complete                        ║${X}"
+echo -e "${B}${G}╚══════════════════════════════════════════════╝${X}"
+echo ""
+echo -e "  Run ${B}bash ~/start_sentinel.sh${X} to launch all services."
+echo ""

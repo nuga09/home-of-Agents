@@ -1,0 +1,27 @@
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
+
+declare global {
+  var globalForPrisma: { prisma?: PrismaClient };
+}
+
+// Suppress pg's SSL-mode deprecation warning (sslmode=require is fine for Neon;
+// the warning fires because pg v8 aliases 'require' → 'verify-full', which is correct behaviour).
+process.on("warning", (w) => {
+  if (w.message.includes("SSL modes")) return;
+  console.warn(w);
+});
+
+// Create a Postgres pool for the adapter
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+export const db =
+  globalThis.globalForPrisma?.prisma ??
+  new PrismaClient({
+    adapter: new PrismaPg(pool),
+    log: process.env.NODE_ENV === "development" ? [] : [],
+  });
+
+// Prevent multiple instances in dev
+if (process.env.NODE_ENV !== "production") globalThis.globalForPrisma = { prisma: db };

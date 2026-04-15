@@ -1,0 +1,89 @@
+import React, { Suspense, useEffect, useState } from 'react'
+import { Canvas } from '@react-three/fiber'
+import { OrbitControls, Environment, useGLTF, Grid, Center } from '@react-three/drei'
+
+function GLBModel({ url }) {
+  const { scene } = useGLTF(url)
+  return (
+    <Center>
+      <primitive object={scene} />
+    </Center>
+  )
+}
+
+function PlaceholderGrid() {
+  return (
+    <>
+      <Grid
+        args={[20, 20]}
+        cellSize={0.5}
+        cellThickness={0.5}
+        cellColor="#2a2a3a"
+        sectionSize={2}
+        sectionThickness={1}
+        sectionColor="#3a3a5a"
+        fadeDistance={25}
+        fadeStrength={1}
+        followCamera={false}
+        infiniteGrid
+      />
+      <mesh position={[0, 0.5, 0]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color="#7c6af7" wireframe />
+      </mesh>
+    </>
+  )
+}
+
+export default function ScenePreview({ glbUrl, sceneGraph }) {
+  const [blobUrl, setBlobUrl] = useState(null)
+
+  useEffect(() => {
+    if (!glbUrl) { setBlobUrl(null); return }
+    // Fetch the GLB via the proxied API and create an object URL
+    fetch(glbUrl)
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob)
+        setBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url })
+      })
+      .catch(console.error)
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [glbUrl])
+
+  return (
+    <div style={styles.root}>
+      {!glbUrl && (
+        <div style={styles.hint}>
+          {sceneGraph
+            ? `Scene graph ready (${sceneGraph.objects?.length ?? 0} parts). Click "Render GLB" to export.`
+            : 'No scene yet — describe one in the chat.'}
+        </div>
+      )}
+      <Canvas
+        camera={{ position: [4, 3, 4], fov: 45 }}
+        style={{ background: '#0f0f13' }}
+        shadows
+      >
+        <ambientLight intensity={0.4} />
+        <directionalLight position={[5, 8, 3]} intensity={1.5} castShadow />
+        <Suspense fallback={null}>
+          {blobUrl ? <GLBModel url={blobUrl} /> : <PlaceholderGrid />}
+          <Environment preset="city" />
+        </Suspense>
+        <OrbitControls makeDefault />
+      </Canvas>
+    </div>
+  )
+}
+
+const styles = {
+  root: { flex: 1, position: 'relative', overflow: 'hidden' },
+  hint: {
+    position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+    background: 'rgba(22,22,30,0.85)', border: '1px solid #2a2a3a',
+    borderRadius: 8, padding: '8px 16px', fontSize: 12, color: '#888',
+    zIndex: 10, whiteSpace: 'nowrap', maxWidth: '90%', textAlign: 'center',
+  },
+}

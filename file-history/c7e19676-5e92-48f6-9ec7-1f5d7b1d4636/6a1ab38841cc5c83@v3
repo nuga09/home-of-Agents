@@ -1,0 +1,98 @@
+model_list:
+  # ── Fast / cheap ──────────────────────────────────────────────────────────
+  - model_name: llama3.2
+    litellm_params:
+      model: ollama/llama3.2:3b
+      api_base: http://localhost:11434
+
+  - model_name: phi3.5
+    litellm_params:
+      model: ollama/phi3.5:3.8b
+      api_base: http://localhost:11434
+
+  # ── Coding ────────────────────────────────────────────────────────────────
+  - model_name: deepseek-coder
+    litellm_params:
+      model: ollama/deepseek-coder:6.7b
+      api_base: http://localhost:11434
+
+  # ── General purpose ───────────────────────────────────────────────────────
+  - model_name: mistral
+    litellm_params:
+      model: ollama/mistral:7b
+      api_base: http://localhost:11434
+
+  # ── Reasoning ─────────────────────────────────────────────────────────────
+  - model_name: deepseek-r1
+    litellm_params:
+      model: ollama/deepseek-r1:7b
+      api_base: http://localhost:11434
+
+  # ── Claude name aliases (for Claude Code compatibility) ───────────────────
+  # claude-haiku → llama3.2:3b  (fast/cheap)
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: ollama/llama3.2:3b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  - model_name: claude-haiku-4-5-20251001[1m]
+    litellm_params:
+      model: ollama/llama3.2:3b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  # claude-sonnet → deepseek-coder (capable, coding-optimised)
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: ollama/deepseek-coder:6.7b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  - model_name: claude-sonnet-4-6[1m]
+    litellm_params:
+      model: ollama/deepseek-coder:6.7b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  # claude-sonnet-4-5 (older alias still used by some tools)
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: ollama/deepseek-coder:6.7b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  # claude-opus → deepseek-r1 (heaviest local reasoning model)
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: ollama/deepseek-r1:7b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  - model_name: claude-opus-4-6[1m]
+    litellm_params:
+      model: ollama/deepseek-r1:7b
+      api_base: http://localhost:11434
+    model_info:
+      supports_reasoning: false
+
+  # ── Embeddings ────────────────────────────────────────────────────────────
+  - model_name: nomic-embed-text
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: http://localhost:11434
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 600
+  num_retries: 2
+  set_verbose: false
+
+general_settings:
+  disable_spend_logs: true

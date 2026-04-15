@@ -1,0 +1,7 @@
+{
+  "autoUpdatesChannel": "latest",
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "env": {}
+}

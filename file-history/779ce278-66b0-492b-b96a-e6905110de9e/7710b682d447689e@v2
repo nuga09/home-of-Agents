@@ -1,0 +1,97 @@
+import React, { useCallback } from 'react'
+import { useDropzone } from 'react-dropzone'
+
+export default function DropZone({ pendingImages, pendingGlbs, onImagesChange, onGlbsChange }) {
+  const onDrop = useCallback((accepted) => {
+    const imgs = accepted.filter(f => f.type.startsWith('image/'))
+    const glbs = accepted.filter(f =>
+      f.name.toLowerCase().endsWith('.glb') || f.name.toLowerCase().endsWith('.gltf'))
+
+    if (imgs.length) onImagesChange(prev => [...prev, ...imgs])
+    if (glbs.length) onGlbsChange(prev => [...prev, ...glbs])
+  }, [onImagesChange, onGlbsChange])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { 'image/*': [], 'model/gltf-binary': ['.glb'], 'model/gltf+json': ['.gltf'] },
+    noClick: pendingImages.length + pendingGlbs.length > 0,
+  })
+
+  const removeImage = (i) => onImagesChange(prev => prev.filter((_, idx) => idx !== i))
+  const removeGlb = (i) => onGlbsChange(prev => prev.filter((_, idx) => idx !== i))
+
+  const hasFiles = pendingImages.length + pendingGlbs.length > 0
+
+  return (
+    <div style={styles.root}>
+      <div
+        {...getRootProps()}
+        style={{
+          ...styles.zone,
+          ...(isDragActive ? styles.zoneActive : {}),
+          ...(hasFiles ? styles.zoneCompact : {}),
+        }}
+      >
+        <input {...getInputProps()} />
+
+        {!hasFiles && (
+          isDragActive
+            ? <p style={styles.hint}>Drop images or GLB files…</p>
+            : <p style={styles.hint}>
+                <span style={styles.icon}>⊕</span> Drag images or .glb assets here
+              </p>
+        )}
+
+        {hasFiles && (
+          <div style={styles.files}>
+            {pendingImages.map((f, i) => (
+              <FileChip key={i} name={f.name} kind="img" onRemove={() => removeImage(i)} />
+            ))}
+            {pendingGlbs.map((f, i) => (
+              <FileChip key={i} name={f.name} kind="glb" onRemove={() => removeGlb(i)} />
+            ))}
+            {isDragActive && <span style={{ ...styles.hint, fontSize: 11 }}>Drop more…</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FileChip({ name, kind, onRemove }) {
+  const colors = { img: { bg: '#1e2a3a', border: '#2a4a7a', label: '#4a9eff' },
+                   glb: { bg: '#2a1e3a', border: '#4a2a7a', label: '#a04aff' } }
+  const c = colors[kind] || colors.img
+  return (
+    <span style={{ ...styles.chip, background: c.bg, borderColor: c.border }}>
+      <span style={{ ...styles.chipKind, color: c.label }}>{kind.toUpperCase()}</span>
+      <span style={styles.chipName}>{name.length > 18 ? name.slice(0, 16) + '…' : name}</span>
+      <button style={styles.chipRemove} onClick={(e) => { e.stopPropagation(); onRemove() }}>✕</button>
+    </span>
+  )
+}
+
+const styles = {
+  root: { flexShrink: 0, padding: '8px 12px', borderBottom: '1px solid #2a2a3a' },
+  zone: {
+    border: '1px dashed #3a3a4a', borderRadius: 8,
+    padding: '12px', cursor: 'pointer', transition: 'all 0.15s',
+    minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  zoneActive: { borderColor: '#7c6af7', background: 'rgba(124,106,247,0.06)' },
+  zoneCompact: { minHeight: 36, padding: '6px 10px', justifyContent: 'flex-start' },
+  hint: { fontSize: 12, color: '#555', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6 },
+  icon: { fontSize: 16, color: '#3a3a5a' },
+  files: { display: 'flex', flexWrap: 'wrap', gap: 6, width: '100%' },
+  chip: {
+    display: 'inline-flex', alignItems: 'center', gap: 5,
+    border: '1px solid', borderRadius: 5, padding: '2px 8px 2px 6px',
+    fontSize: 11, maxWidth: 180,
+  },
+  chipKind: { fontWeight: 800, fontSize: 9, letterSpacing: '0.05em' },
+  chipName: { color: '#a0a0b0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  chipRemove: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#555', fontSize: 10, padding: 0, lineHeight: 1,
+  },
+}

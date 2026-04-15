@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "claude-mem": "^10.6.2"
+  }
+}

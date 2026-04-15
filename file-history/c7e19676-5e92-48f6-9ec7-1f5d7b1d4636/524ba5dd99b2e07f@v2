@@ -1,0 +1,16 @@
+[Unit]
+Description=LiteLLM Proxy for Ollama
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/nugad/.local/bin/litellm --config /home/nugad/.claude/litellm_config.yaml --port 4001 --host 0.0.0.0
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/nugad
+Environment=PATH=/home/nugad/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
