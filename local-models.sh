@@ -7,15 +7,14 @@ OLLAMA_URL="http://localhost:11434"
 
 # Available local models
 declare -A MODELS=(
-  [llama3.2]="llama3.2:3b"          # 2.0 GB - fast, general purpose
-  [phi3.5]="phi3.5:3.8b"            # 2.2 GB - fast, efficient
-  [mistral]="mistral:7b"            # 4.4 GB - strong general reasoning
-  [deepseek-coder]="deepseek-coder:6.7b"  # 3.8 GB - coding focused
-  [deepseek-r1]="deepseek-r1:7b"    # 4.7 GB - reasoning/thinking model
+  [qwen3.5]="qwen3.5:9b"            # 6.6 GB - general purpose
+  [qwen2.5-coder]="qwen2.5-coder:14b"  # 9.0 GB - coding focused
+  [deepseek-r1]="deepseek-r1:14b"   # 9.0 GB - reasoning/thinking model
+  [nomic-embed]="nomic-embed-text:latest"  # 274 MB - embeddings
 )
 
 use_local() {
-  local model_key="${1:-deepseek-coder}"
+  local model_key="${1:-qwen2.5-coder}"
   local model_name="${MODELS[$model_key]}"
 
   if [[ -z "$model_name" ]]; then
@@ -52,8 +51,9 @@ list_models() {
   done | sort
   echo ""
   echo "Usage:"
-  echo "  source ~/.claude/local-models.sh llama3.2"
-  echo "  source ~/.claude/local-models.sh deepseek-coder"
+  echo "  source ~/.claude/local-models.sh qwen3.5"
+  echo "  source ~/.claude/local-models.sh qwen2.5-coder"
+  echo "  source ~/.claude/local-models.sh deepseek-r1"
   echo "  source ~/.claude/local-models.sh cloud"
 }
 
