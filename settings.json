@@ -36,7 +36,7 @@
       "type": "http",
       "url": "https://mcp.render.com/mcp",
       "headers": {
-        "Authorization": "Bearer rnd_8R3jzEtmYmhA82ByUld1SoUxXkwy"
+        "Authorization": "Bearer ${RENDER_API_KEY}"
       }
     },
     "ruflo": {
