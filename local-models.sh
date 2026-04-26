@@ -8,13 +8,13 @@ OLLAMA_URL="http://localhost:11434"
 # Available local models
 declare -A MODELS=(
   [qwen3.5]="qwen3.5:9b"            # 6.6 GB - general purpose
-  [qwen2.5-coder]="qwen2.5-coder:14b"  # 9.0 GB - coding focused
+  [qwen3.6-coder]="qwen3.6-coder:"  # 9.0 GB - coding focused
   [deepseek-r1]="deepseek-r1:14b"   # 9.0 GB - reasoning/thinking model
   [nomic-embed]="nomic-embed-text:latest"  # 274 MB - embeddings
 )
 
 use_local() {
-  local model_key="${1:-qwen2.5-coder}"
+  local model_key="${1:-qwen3.6-coder}"
   local model_name="${MODELS[$model_key]}"
 
   if [[ -z "$model_name" ]]; then
@@ -52,7 +52,7 @@ list_models() {
   echo ""
   echo "Usage:"
   echo "  source ~/.claude/local-models.sh qwen3.5"
-  echo "  source ~/.claude/local-models.sh qwen2.5-coder"
+  echo "  source ~/.claude/local-models.sh qwen3.6-coder"
   echo "  source ~/.claude/local-models.sh deepseek-r1"
   echo "  source ~/.claude/local-models.sh cloud"
 }
