@@ -7,10 +7,10 @@ OLLAMA_URL="http://localhost:11434"
 
 # Available local models
 declare -A MODELS=(
-  [qwen3.5]="qwen3.5:9b"            # 6.6 GB - general purpose
-  [qwen3.6-coder]="qwen3.6-coder:"  # 9.0 GB - coding focused
-  [deepseek-r1]="deepseek-r1:14b"   # 9.0 GB - reasoning/thinking model
-  [nomic-embed]="nomic-embed-text:latest"  # 274 MB - embeddings
+  [qwen3.5]="qwen3.5:9b"                  # 6.6 GB - general purpose
+  [gemma4]="gemma4:e4b"                   # 9.6 GB - general purpose
+  [deepseek-r1]="deepseek-r1:14b"         # 9.0 GB - reasoning/thinking model
+  [nomic-embed]="nomic-embed-text:latest" # 274 MB - embeddings
 )
 
 use_local() {
@@ -52,7 +52,7 @@ list_models() {
   echo ""
   echo "Usage:"
   echo "  source ~/.claude/local-models.sh qwen3.5"
-  echo "  source ~/.claude/local-models.sh qwen3.6-coder"
+  echo "  source ~/.claude/local-models.sh gemma4"
   echo "  source ~/.claude/local-models.sh deepseek-r1"
   echo "  source ~/.claude/local-models.sh cloud"
 }
