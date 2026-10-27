@@ -8,7 +8,7 @@ OLLAMA_URL="http://localhost:11434"
 # Available local models
 declare -A MODELS=(
   [qwen3.5]="qwen3.5:9b"                  # 6.6 GB - general purpose
-  [qwen3]="qwen3:14b"         # 9.0 GB - reasoning/thinking model
+  [qwen3]="qwen3.8:27b"         # 9.0 GB - reasoning/thinking model
   [nomic-embed]="nomic-embed-text:latest" # 274 MB - embeddings
 )
 
@@ -51,7 +51,7 @@ list_models() {
   echo ""
   echo "Usage:"
   echo "  source ~/.claude/local-models.sh qwen3.5"
-  echo "  source ~/.claude/local-models.sh qwen3:14b"
+  echo "  source ~/.claude/local-models.sh qwen3.8:27b"
   echo "  source ~/.claude/local-models.sh cloud"
 }
 
